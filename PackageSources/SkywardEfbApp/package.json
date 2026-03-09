@@ -9,7 +9,9 @@
     "clean:dist": "if exist ./dist/ (rmdir /s /q dist)",
     "clean:node_modules": "if exist ./node_modules/ (rmdir /s /q node_modules)",
     "rebuild": "npm run clean:dist && npm run build",
-    "watch": "cross-env SERVING_MODE=WATCH node ./build.js"
+    "watch": "cross-env SERVING_MODE=WATCH node ./build.js",
+    "preview:build": "cross-env BUILD_TARGET=preview node ./build.js",
+    "preview:serve": "cross-env BUILD_TARGET=preview SERVING_MODE=SERVE PORT_SERVER=4173 node ./build.js"
   },
   "dependencies": {
     "@efb/efb-api": "file:../efb_api/dist/",

@@ -1,5 +1,7 @@
-import { GamepadUiView, RequiredProps, TTButton, TVNode, UiViewProps } from "@efb/efb-api";
-import { FSComponent } from "@microsoft/msfs-sdk";
+import { GamepadUiView, RequiredProps, TVNode, UiViewProps } from "@efb/efb-api";
+import { FSComponent, NodeReference } from "@microsoft/msfs-sdk";
+import { buildOverviewViewModel, OverviewViewModel } from "./AddonStatusOverview";
+import { syncOverviewCardLayout } from "./OverviewCardLayout";
 
 declare const SimVar: {
     GetSimVarValue: (name: string, unit: string) => number;
@@ -38,6 +40,9 @@ interface StatusData {
     simconnect_connected: boolean;
     current_aircraft: string;
     current_airport: string;
+    airport_match?: boolean;
+    aircraft_match?: boolean;
+    payload_match?: boolean;
     pilot_seat_count?: number;
     copilot_seat_count?: number;
     passenger_seat_count?: number;
@@ -57,6 +62,12 @@ interface StatusData {
     efb_heartbeat_interval_ms?: number;
     efb_stale_timeout_ms?: number;
     efb_is_stale?: boolean;
+    flight_state?: string;
+    flight_progress?: string[];
+    parked_label?: string;
+    sim_utc_hour?: number | null;
+    sim_utc_minute?: number | null;
+    active_sim_state_label?: string;
     mission_payload_signal?: {
         id: number;
         target_pax_count: number;
@@ -173,6 +184,8 @@ interface AircraftExportPayload {
     };
 }
 
+type ActiveSection = "overview" | "simconnect" | "payload";
+
 export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps> {
     public readonly tabName = AddonStatus.name;
     private static readonly STATE_CONFIRM_MS = 250;
@@ -180,6 +193,33 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private static readonly DEFAULT_PAX_WEIGHT_LBS = 170;
     private static readonly EFB_STATE_HEARTBEAT_MS = 2000;
     private static readonly MASS_BALANCE_HEARTBEAT_MS = 2000;
+
+    private readonly overviewSection = FSComponent.createRef<HTMLDivElement>();
+    private readonly simconnectSection = FSComponent.createRef<HTMLDivElement>();
+    private readonly payloadSection = FSComponent.createRef<HTMLDivElement>();
+    private readonly overviewNavButton = FSComponent.createRef<HTMLButtonElement>();
+    private readonly simconnectNavButton = FSComponent.createRef<HTMLButtonElement>();
+    private readonly payloadNavButton = FSComponent.createRef<HTMLButtonElement>();
+    private readonly loadCargoPresetButton = FSComponent.createRef<HTMLButtonElement>();
+    private readonly sendPlanButton = FSComponent.createRef<HTMLButtonElement>();
+    private readonly exportAircraftButton = FSComponent.createRef<HTMLButtonElement>();
+    private readonly airportText = FSComponent.createRef<HTMLDivElement>();
+    private readonly overviewGrid = FSComponent.createRef<HTMLDivElement>();
+    private readonly enRouteCard = FSComponent.createRef<HTMLDivElement>();
+    private readonly enRouteCardMedia = FSComponent.createRef<HTMLImageElement>();
+    private readonly airportCard = FSComponent.createRef<HTMLDivElement>();
+    private readonly aircraftCard = FSComponent.createRef<HTMLDivElement>();
+    private readonly payloadCard = FSComponent.createRef<HTMLDivElement>();
+    private readonly airportCardMedia = FSComponent.createRef<HTMLImageElement>();
+    private readonly aircraftCardMedia = FSComponent.createRef<HTMLImageElement>();
+    private readonly payloadCardMedia = FSComponent.createRef<HTMLImageElement>();
+    private readonly airportCardText = FSComponent.createRef<HTMLDivElement>();
+    private readonly aircraftCardText = FSComponent.createRef<HTMLDivElement>();
+    private readonly payloadCardText = FSComponent.createRef<HTMLDivElement>();
+    private readonly overviewProgress = FSComponent.createRef<HTMLDivElement>();
+    private readonly overviewParked = FSComponent.createRef<HTMLDivElement>();
+    private readonly overviewUtc = FSComponent.createRef<HTMLDivElement>();
+    private readonly overviewSimState = FSComponent.createRef<HTMLDivElement>();
 
     private statusText = FSComponent.createRef<HTMLDivElement>();
     private aircraftText = FSComponent.createRef<HTMLDivElement>();
@@ -198,6 +238,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private statusTimer?: number;
     private refreshTimer?: number;
     private heartbeatTimer?: number;
+    private overviewLayoutRaf?: number;
 
     private massBalanceListener?: MassBalanceListener;
     private massBalanceReady = false;
@@ -266,8 +307,13 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private currentAircraftTitle = "";
     private lastMassBalanceStreamSignature = "";
     private lastMassBalancePostedAtMs?: number;
+    private activeSection: ActiveSection = "overview";
 
     public onAfterRender(): void {
+        this.syncSectionVisibility();
+        this.bindStaticButtonHandlers();
+        this.updateOverview(buildOverviewViewModel({}));
+        window.addEventListener("resize", this.handleWindowResize);
         this.fetchStatus();
         this.initMassBalanceListener();
         this.initAircraftInfoListener();
@@ -284,6 +330,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
     public destroy(): void {
         this.isDestroyed = true;
+        window.removeEventListener("resize", this.handleWindowResize);
         if (this.statusTimer !== undefined) {
             window.clearInterval(this.statusTimer);
         }
@@ -295,6 +342,9 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }
         if (this.pendingRetryTimer !== undefined) {
             window.clearTimeout(this.pendingRetryTimer);
+        }
+        if (this.overviewLayoutRaf !== undefined) {
+            window.cancelAnimationFrame(this.overviewLayoutRaf);
         }
         if (this.confirmStateTimer !== undefined) {
             window.clearTimeout(this.confirmStateTimer);
@@ -441,6 +491,162 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }
     }
 
+    private setSection(section: ActiveSection): void {
+        this.activeSection = section;
+        this.syncSectionVisibility();
+    }
+
+    private readonly handleWindowResize = (): void => {
+        this.scheduleOverviewLayoutSync();
+    };
+
+    private scheduleOverviewLayoutSync(): void {
+        if (this.overviewLayoutRaf !== undefined) {
+            window.cancelAnimationFrame(this.overviewLayoutRaf);
+        }
+
+        this.overviewLayoutRaf = window.requestAnimationFrame(() => {
+            this.overviewLayoutRaf = undefined;
+            if (this.gamepadUiViewRef.instance) {
+                syncOverviewCardLayout(this.gamepadUiViewRef.instance);
+            }
+        });
+    }
+
+    private bindStaticButtonHandlers(): void {
+        const bindings: Array<[NodeReference<HTMLButtonElement>, () => void]> = [
+            [this.overviewNavButton, () => { this.setSection("overview"); }],
+            [this.simconnectNavButton, () => { this.setSection("simconnect"); }],
+            [this.payloadNavButton, () => { this.setSection("payload"); }],
+            [this.loadCargoPresetButton, () => { this.loadCargoPreset(); }],
+            [this.sendPlanButton, () => { this.sendPlannerConfigToAtcAndOpen(); }],
+            [this.exportAircraftButton, () => { this.exportAircraftJson(); }],
+        ];
+
+        for (const [ref, handler] of bindings) {
+            if (ref.instance) {
+                ref.instance.onclick = handler;
+            }
+        }
+    }
+
+    private syncSectionVisibility(): void {
+        const sectionEntries: Array<[ActiveSection, typeof this.overviewSection]> = [
+            ["overview", this.overviewSection],
+            ["simconnect", this.simconnectSection],
+            ["payload", this.payloadSection],
+        ];
+        const buttonEntries: Array<[ActiveSection, typeof this.overviewNavButton]> = [
+            ["overview", this.overviewNavButton],
+            ["simconnect", this.simconnectNavButton],
+            ["payload", this.payloadNavButton],
+        ];
+
+        for (const [section, ref] of sectionEntries) {
+            if (!ref.instance) {
+                continue;
+            }
+            ref.instance.classList.toggle("skyward-section--hidden", this.activeSection !== section);
+        }
+
+        for (const [section, ref] of buttonEntries) {
+            if (!ref.instance) {
+                continue;
+            }
+            ref.instance.classList.toggle("skyward-sidebar__button--active", this.activeSection === section);
+        }
+
+        this.scheduleOverviewLayoutSync();
+    }
+
+    private setStatusTone(
+        ref: { instance: HTMLElement | null },
+        tone: "success" | "danger" | "warning" | "info",
+        baseClass = "skyward-status-line",
+    ): void {
+        if (!ref.instance) {
+            return;
+        }
+        ref.instance.className = `${baseClass} ${baseClass}--${tone}`;
+    }
+
+    private setResult(text: string, toneColor: string): void {
+        if (!this.cargoResult.instance) {
+            return;
+        }
+
+        let tone: "success" | "danger" | "warning" | "info" = "info";
+        switch (toneColor) {
+            case "#4CAF50":
+                tone = "success";
+                break;
+            case "#f44336":
+                tone = "danger";
+                break;
+            case "#FFA726":
+                tone = "warning";
+                break;
+            default:
+                tone = "info";
+                break;
+        }
+
+        this.cargoResult.instance.textContent = text;
+        this.setStatusTone(this.cargoResult, tone, "skyward-result");
+    }
+
+    private setEmptyState(container: HTMLElement, text: string): void {
+        container.innerHTML = "";
+        const empty = document.createElement("div");
+        empty.className = "skyward-empty-state";
+        empty.textContent = text;
+        container.appendChild(empty);
+    }
+
+    private updateOverview(model: OverviewViewModel): void {
+        if (this.overviewGrid.instance) {
+            this.overviewGrid.instance.classList.toggle("skyward-overview-grid--hidden", model.showEnRoute);
+        }
+        if (this.enRouteCard.instance) {
+            this.enRouteCard.instance.classList.toggle("skyward-overview-enroute--visible", model.showEnRoute);
+        }
+        if (this.enRouteCardMedia.instance) {
+            this.enRouteCardMedia.instance.src = model.enRouteImage;
+        }
+
+        const cardMap = [
+            [this.airportCardMedia, this.airportCardText, model.cards.airport],
+            [this.aircraftCardMedia, this.aircraftCardText, model.cards.aircraft],
+            [this.payloadCardMedia, this.payloadCardText, model.cards.payload],
+        ] as const;
+
+        for (const [mediaRef, textRef, card] of cardMap) {
+            if (mediaRef.instance) {
+                mediaRef.instance.src = card.backgroundImage;
+            }
+            if (textRef.instance) {
+                textRef.instance.textContent = card.statusText;
+                textRef.instance.classList.toggle("skyward-image-card__body--compact", card.statusText.length > 82);
+            }
+        }
+
+        if (this.overviewProgress.instance) {
+            this.overviewProgress.instance.textContent = model.progressText;
+        }
+        if (this.overviewParked.instance) {
+            this.overviewParked.instance.textContent = model.parkedText;
+            this.overviewParked.instance.classList.toggle("skyward-meta-row--hidden", model.parkedText.length === 0);
+        }
+        if (this.overviewUtc.instance) {
+            this.overviewUtc.instance.textContent = model.simUtcText;
+        }
+        if (this.overviewSimState.instance) {
+            this.overviewSimState.instance.textContent = model.simStateText;
+        }
+
+        this.scheduleOverviewLayoutSync();
+    }
+
     private setPayloadStationsFromStatus(payloadStations?: StatusData["payload_stations"]): void {
         this.payloadStationsById.clear();
         if (!payloadStations || typeof payloadStations !== "object") {
@@ -496,58 +702,10 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         onClick: () => void,
         variant: "blue" | "green" | "teal" = "blue",
     ): HTMLButtonElement {
-        const palette = {
-            blue: {
-                background: "linear-gradient(180deg, #3b82f6, #1d4ed8)",
-                border: "#60a5fa",
-                shadow: "rgba(37, 99, 235, 0.35)",
-            },
-            green: {
-                background: "linear-gradient(180deg, #22c55e, #15803d)",
-                border: "#4ade80",
-                shadow: "rgba(34, 197, 94, 0.35)",
-            },
-            teal: {
-                background: "linear-gradient(180deg, #14b8a6, #0f766e)",
-                border: "#2dd4bf",
-                shadow: "rgba(20, 184, 166, 0.35)",
-            },
-        }[variant];
-
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = label;
-        button.style.height = "36px";
-        button.style.padding = "0 14px";
-        button.style.background = palette.background;
-        button.style.color = "#f8fafc";
-        button.style.border = `1px solid ${palette.border}`;
-        button.style.borderRadius = "10px";
-        button.style.fontSize = "13px";
-        button.style.fontWeight = "800";
-        button.style.letterSpacing = "0.02em";
-        button.style.cursor = "pointer";
-        button.style.boxShadow = `0 10px 22px -14px ${palette.shadow}`;
-        button.style.transition = "transform 120ms ease, box-shadow 120ms ease, filter 120ms ease";
-        button.style.outline = "none";
-        button.onmouseenter = (): void => {
-            button.style.transform = "translateY(-1px)";
-            button.style.filter = "brightness(1.08)";
-            button.style.boxShadow = `0 14px 28px -14px ${palette.shadow}`;
-        };
-        button.onmouseleave = (): void => {
-            button.style.transform = "translateY(0)";
-            button.style.filter = "none";
-            button.style.boxShadow = `0 10px 22px -14px ${palette.shadow}`;
-        };
-        button.onmousedown = (): void => {
-            button.style.transform = "translateY(0)";
-            button.style.filter = "brightness(0.98)";
-        };
-        button.onmouseup = (): void => {
-            button.style.transform = "translateY(-1px)";
-            button.style.filter = "brightness(1.08)";
-        };
+        button.className = `skyward-action-button skyward-action-button--${variant}`;
         button.onclick = onClick;
         return button;
     }
@@ -653,6 +811,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         try {
             const res = await fetch("http://127.0.0.1:5000/status");
             const data: StatusData = await res.json();
+            this.updateOverview(buildOverviewViewModel(data));
 
             if (!this.addonReachable) {
                 this.addonReachable = true;
@@ -669,8 +828,8 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                 this.statusText.instance.textContent = data.simconnect_connected
                     ? "SimConnect: Connected"
                     : "SimConnect: Disconnected";
-                this.statusText.instance.style.color = data.simconnect_connected ? "#4CAF50" : "#f44336";
             }
+            this.setStatusTone(this.statusText, data.simconnect_connected ? "success" : "danger");
 
             if (data.simconnect_connected && !this.simconnectWasConnected) {
                 this.simconnectWasConnected = true;
@@ -693,6 +852,11 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                     ? `Aircraft: ${data.current_aircraft}`
                     : "";
             }
+            if (this.airportText.instance) {
+                this.airportText.instance.textContent = data.current_airport
+                    ? `Airport: ${data.current_airport}`
+                    : "";
+            }
             this.currentAircraftTitle = typeof data.current_aircraft === "string" ? data.current_aircraft : "";
             this.setSeatCountsFromStatus(data);
             this.setPayloadStationsFromStatus(data.payload_stations);
@@ -703,8 +867,9 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             this.simconnectWasConnected = false;
             if (this.statusText.instance) {
                 this.statusText.instance.textContent = "Addon server is unreachable";
-                this.statusText.instance.style.color = "#f44336";
             }
+            this.setStatusTone(this.statusText, "danger");
+            this.updateOverview(buildOverviewViewModel({}));
         }
     }
 
@@ -1112,8 +1277,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             }
         } catch {
             if (this.cargoResult.instance) {
-                this.cargoResult.instance.textContent = "Mass & Balance data could not be read.";
-                this.cargoResult.instance.style.color = "#f44336";
+                this.setResult("Mass & Balance data could not be read.", "#f44336");
             }
         }
     }
@@ -1220,19 +1384,12 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
         this.payloadPlanner.instance.innerHTML = "";
         if (this.safePayloadMaxLbs <= 0 || (this.maxPaxCapacity <= 0 && this.maxCargoCapacityLbs <= 0)) {
-            this.payloadPlanner.instance.innerHTML = "<div style='color:#aaa'>Payload planner data is not ready.</div>";
+            this.setEmptyState(this.payloadPlanner.instance, "Payload planner data is not ready.");
             return;
         }
 
         const container = document.createElement("div");
-        container.style.background = "linear-gradient(180deg, #1f2937, #111827)";
-        container.style.border = "1px solid #334155";
-        container.style.borderRadius = "12px";
-        container.style.padding = "12px";
-        container.style.display = "grid";
-        container.style.gridTemplateColumns = "1fr 120px 140px";
-        container.style.gap = "8px";
-        container.style.alignItems = "center";
+        container.className = "skyward-planner";
 
         const slider = document.createElement("input");
         slider.type = "range";
@@ -1240,12 +1397,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         slider.max = "100";
         slider.step = "1";
         slider.value = this.plannerPercent.toString();
-        slider.style.height = "30px";
-        slider.style.accentColor = "#22c55e";
-        slider.style.transform = "scaleY(1.8)";
-        slider.style.transformOrigin = "center";
-        slider.style.cursor = "pointer";
-        slider.style.margin = "6px 0";
+        slider.className = "skyward-planner__slider";
 
         const pctInput = document.createElement("input");
         pctInput.type = "number";
@@ -1253,28 +1405,17 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         pctInput.max = "100";
         pctInput.step = "1";
         pctInput.value = this.plannerPercent.toString();
-        pctInput.style.height = "36px";
-        pctInput.style.padding = "6px 8px";
-        pctInput.style.background = "#0b1220";
-        pctInput.style.color = "#fff";
-        pctInput.style.border = "1px solid #475569";
-        pctInput.style.borderRadius = "8px";
-        pctInput.style.fontSize = "14px";
-        pctInput.style.fontWeight = "600";
+        pctInput.className = "skyward-editor-input";
 
         const applyBtn = this.createActionButton(
             "Apply TO-safe",
             (): void => { this.applyTakeoffSafePayload(Number(slider.value)); },
             "green",
         );
-        applyBtn.style.minWidth = "140px";
+        applyBtn.classList.add("skyward-action-button--wide");
 
         const detail = document.createElement("div");
-        detail.style.gridColumn = "1 / span 3";
-        detail.style.fontSize = "13px";
-        detail.style.color = "#cfe7d0";
-        detail.style.marginTop = "6px";
-        detail.style.lineHeight = "1.5";
+        detail.className = "skyward-planner__detail";
 
         const syncAndPreview = (pctRaw: number): void => {
             const pct = Math.max(0, Math.min(100, Math.round(pctRaw)));
@@ -1539,26 +1680,16 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.cargoEditors.instance.innerHTML = "";
 
         if (this.cargoStations.length === 0) {
-            this.cargoEditors.instance.innerHTML = "<div style='color:#aaa'>No cargo station found for this aircraft.</div>";
+            this.setEmptyState(this.cargoEditors.instance, "No cargo station found for this aircraft.");
             return;
         }
 
         for (const station of this.cargoStations) {
             const row = document.createElement("div");
-            row.style.background = "linear-gradient(180deg, #111827, #0b1220)";
-            row.style.border = "1px solid #334155";
-            row.style.borderRadius = "10px";
-            row.style.padding = "10px";
-            row.style.display = "grid";
-            row.style.gridTemplateColumns = "1fr 120px 70px";
-            row.style.gap = "8px";
-            row.style.alignItems = "center";
-            row.style.marginBottom = "8px";
+            row.className = "skyward-editor-row";
 
             const info = document.createElement("div");
-            info.style.color = "#ddd";
-            info.style.fontSize = "14px";
-            info.style.lineHeight = "1.4";
+            info.className = "skyward-editor-row__info";
             info.textContent =
                 `Cargo ${station.id} (${station.name})  Current: ${station.massLbs.toFixed(1)} lbs  Max: ${station.maxLbs.toFixed(1)} lbs`;
 
@@ -1568,15 +1699,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             input.min = station.minLbs.toString();
             input.max = station.maxLbs.toString();
             input.value = this.cargoDraftValues.get(station.id) ?? station.massLbs.toFixed(0);
-            input.style.width = "100%";
-            input.style.height = "36px";
-            input.style.padding = "6px 8px";
-            input.style.background = "#020617";
-            input.style.color = "#fff";
-            input.style.border = "1px solid #475569";
-            input.style.borderRadius = "8px";
-            input.style.fontSize = "14px";
-            input.style.fontWeight = "600";
+            input.className = "skyward-editor-input";
             input.onfocus = (): void => { this.editingCargoIds.add(station.id); };
             input.onblur = (): void => {
                 this.editingCargoIds.delete(station.id);
@@ -1605,26 +1728,16 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.baggageEditors.instance.innerHTML = "";
 
         if (this.baggageStations.length === 0) {
-            this.baggageEditors.instance.innerHTML = "<div style='color:#aaa'>No baggage station found for this aircraft.</div>";
+            this.setEmptyState(this.baggageEditors.instance, "No baggage station found for this aircraft.");
             return;
         }
 
         for (const station of this.baggageStations) {
             const row = document.createElement("div");
-            row.style.background = "linear-gradient(180deg, #111827, #0b1220)";
-            row.style.border = "1px solid #334155";
-            row.style.borderRadius = "10px";
-            row.style.padding = "10px";
-            row.style.display = "grid";
-            row.style.gridTemplateColumns = "1fr 120px 70px";
-            row.style.gap = "8px";
-            row.style.alignItems = "center";
-            row.style.marginBottom = "8px";
+            row.className = "skyward-editor-row";
 
             const info = document.createElement("div");
-            info.style.color = "#ddd";
-            info.style.fontSize = "14px";
-            info.style.lineHeight = "1.4";
+            info.className = "skyward-editor-row__info";
             info.textContent =
                 `Baggage ${station.id} (${station.name})  Current: ${station.massLbs.toFixed(1)} lbs  Max: ${station.maxLbs.toFixed(1)} lbs`;
 
@@ -1634,15 +1747,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             input.min = station.minLbs.toString();
             input.max = station.maxLbs.toString();
             input.value = this.cargoDraftValues.get(station.id) ?? station.massLbs.toFixed(0);
-            input.style.width = "100%";
-            input.style.height = "36px";
-            input.style.padding = "6px 8px";
-            input.style.background = "#020617";
-            input.style.color = "#fff";
-            input.style.border = "1px solid #475569";
-            input.style.borderRadius = "8px";
-            input.style.fontSize = "14px";
-            input.style.fontWeight = "600";
+            input.className = "skyward-editor-input";
             input.onfocus = (): void => { this.editingCargoIds.add(station.id); };
             input.onblur = (): void => {
                 this.editingCargoIds.delete(station.id);
@@ -1672,26 +1777,16 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
         const editableSeats = this.seatStations.filter(seat => seat.sectionType === 2);
         if (editableSeats.length === 0) {
-            this.seatEditors.instance.innerHTML = "<div style='color:#aaa'>No passenger seat section found for this aircraft.</div>";
+            this.setEmptyState(this.seatEditors.instance, "No passenger seat section found for this aircraft.");
             return;
         }
 
         for (const seat of editableSeats) {
             const row = document.createElement("div");
-            row.style.background = "linear-gradient(180deg, #111827, #0b1220)";
-            row.style.border = "1px solid #334155";
-            row.style.borderRadius = "10px";
-            row.style.padding = "10px";
-            row.style.display = "grid";
-            row.style.gridTemplateColumns = "1fr 120px 70px";
-            row.style.gap = "8px";
-            row.style.alignItems = "center";
-            row.style.marginBottom = "8px";
+            row.className = "skyward-editor-row";
 
             const info = document.createElement("div");
-            info.style.color = "#ddd";
-            info.style.fontSize = "14px";
-            info.style.lineHeight = "1.4";
+            info.className = "skyward-editor-row__info";
             const seatRole = "Passenger seat";
             info.textContent =
                 `${seat.sectionName} (${seatRole})  Current Pax: ${seat.currentOccupation}  Max Pax: ${seat.maxOccupation}`;
@@ -1702,15 +1797,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             input.min = "0";
             input.max = seat.maxOccupation.toString();
             input.value = this.seatDraftValues.get(seat.key) ?? seat.currentOccupation.toString();
-            input.style.width = "100%";
-            input.style.height = "36px";
-            input.style.padding = "6px 8px";
-            input.style.background = "#020617";
-            input.style.color = "#fff";
-            input.style.border = "1px solid #475569";
-            input.style.borderRadius = "8px";
-            input.style.fontSize = "14px";
-            input.style.fontWeight = "600";
+            input.className = "skyward-editor-input";
             input.onfocus = (): void => { this.editingSeatKeys.add(seat.key); };
             input.onblur = (): void => {
                 this.editingSeatKeys.delete(seat.key);
@@ -1796,14 +1883,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         } catch {
             this.setResult(`${seat.sectionName} update failed`, "#f44336");
         }
-    }
-
-    private setResult(text: string, color: string): void {
-        if (!this.cargoResult.instance) {
-            return;
-        }
-        this.cargoResult.instance.textContent = text;
-        this.cargoResult.instance.style.color = color;
     }
 
     private async loadCargoPreset(): Promise<void> {
@@ -2309,54 +2388,165 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }
     }
 
+    private renderSidebarButton(
+        label: string,
+        section: ActiveSection,
+        ref: NodeReference<HTMLButtonElement>,
+    ): TVNode<HTMLButtonElement> {
+        return (
+            <button
+                ref={ref}
+                type="button"
+                class="skyward-sidebar__button"
+                data-section={section}
+            >
+                {label}
+            </button>
+        );
+    }
+
+    private renderOverviewCard(
+        title: string,
+        cardRef: NodeReference<HTMLDivElement>,
+        mediaRef: NodeReference<HTMLImageElement>,
+        textRef: NodeReference<HTMLDivElement>,
+    ): TVNode<HTMLDivElement> {
+        return (
+            <div ref={cardRef} class="skyward-image-card skyward-image-card--square skyward-overview-card">
+                <img ref={mediaRef} class="skyward-image-card__media" alt="" />
+                <div class="skyward-image-card__overlay" />
+                <div class="skyward-image-card__content">
+                    <div class="skyward-image-card__eyebrow">{title}</div>
+                    <div ref={textRef} class="skyward-image-card__body" />
+                </div>
+            </div>
+        );
+    }
+
+    private renderOverviewSection(): TVNode<HTMLDivElement> {
+        return (
+            <section ref={this.overviewSection} class="skyward-section skyward-section--overview">
+                <div ref={this.overviewGrid} class="skyward-overview-grid">
+                    {this.renderOverviewCard("Airport", this.airportCard, this.airportCardMedia, this.airportCardText)}
+                    {this.renderOverviewCard("Aircraft", this.aircraftCard, this.aircraftCardMedia, this.aircraftCardText)}
+                    {this.renderOverviewCard("Payload", this.payloadCard, this.payloadCardMedia, this.payloadCardText)}
+                </div>
+
+                <div ref={this.enRouteCard} class="skyward-image-card skyward-image-card--panoramic skyward-overview-enroute">
+                    <img ref={this.enRouteCardMedia} class="skyward-image-card__media" alt="" />
+                    <div class="skyward-image-card__overlay" />
+                    <div class="skyward-image-card__center-label">En Route</div>
+                </div>
+
+                <div class="skyward-meta-list">
+                    <div ref={this.overviewProgress} class="skyward-meta-row" />
+                    <div ref={this.overviewParked} class="skyward-meta-row skyward-meta-row--hidden" />
+                    <div ref={this.overviewUtc} class="skyward-meta-row" />
+                    <div ref={this.overviewSimState} class="skyward-meta-row" />
+                </div>
+            </section>
+        );
+    }
+
+    private renderSimConnectSection(): TVNode<HTMLDivElement> {
+        return (
+            <section ref={this.simconnectSection} class="skyward-section skyward-section--hidden">
+                <div class="skyward-section__header">
+                    <h2 class="skyward-section__title">SimConnect</h2>
+                    <p class="skyward-section__subtitle">Connection, game state capture and EFB posting diagnostics.</p>
+                </div>
+
+                <div ref={this.statusText} class="skyward-status-line">Connecting...</div>
+                <div ref={this.aircraftText} class="skyward-info-line" />
+                <div ref={this.airportText} class="skyward-info-line" />
+                <div ref={this.gameModeDebug} class="skyward-debug-line skyward-debug-line--warning">{this.gmStatusText}</div>
+                <div ref={this.isInMenuDebug} class="skyward-debug-line skyward-debug-line--warning">{this.menuStatusText}</div>
+                <div ref={this.postDebug} class="skyward-debug-line skyward-debug-line--danger">{this.postStatusText}</div>
+                <div ref={this.connectionDebug} class="skyward-debug-line skyward-debug-line--info">{this.connectionStatusText}</div>
+            </section>
+        );
+    }
+
+    private renderPayloadSection(): TVNode<HTMLDivElement> {
+        return (
+            <section ref={this.payloadSection} class="skyward-section skyward-section--hidden">
+                <div class="skyward-section__header">
+                    <h2 class="skyward-section__title">Payload</h2>
+                    <p class="skyward-section__subtitle">Mass and balance planning, live payload editing and aircraft export.</p>
+                </div>
+
+                <div ref={this.massSummary} class="skyward-payload-summary" />
+
+                <div class="skyward-subsection">
+                    <div class="skyward-subsection__title">Takeoff-safe payload planner (Atlas-like):</div>
+                    <div ref={this.payloadPlanner} />
+                </div>
+
+                <div class="skyward-subsection">
+                    <div class="skyward-subsection__title">Cargo stations (weight lbs, with max limit):</div>
+                    <div ref={this.cargoEditors} class="skyward-editor-list" />
+                </div>
+
+                <div class="skyward-subsection">
+                    <div class="skyward-subsection__title">Baggage stations (weight lbs, with max limit):</div>
+                    <div ref={this.baggageEditors} class="skyward-editor-list" />
+                </div>
+
+                <div class="skyward-subsection">
+                    <div class="skyward-subsection__title">Passenger/seat stations (occupancy pax, with max seat capacity):</div>
+                    <div ref={this.seatSummary} class="skyward-seat-summary" />
+                    <div ref={this.seatEditors} class="skyward-editor-list" />
+                </div>
+
+                <div class="skyward-action-group">
+                    <button
+                        ref={this.loadCargoPresetButton}
+                        type="button"
+                        class="skyward-action-button skyward-action-button--blue"
+                    >
+                        Load Cargo Preset
+                    </button>
+                    <button
+                        ref={this.sendPlanButton}
+                        type="button"
+                        class="skyward-action-button skyward-action-button--teal"
+                    >
+                        Send Plan to ATC (No Immediate Load)
+                    </button>
+                    <button
+                        ref={this.exportAircraftButton}
+                        type="button"
+                        class="skyward-action-button skyward-action-button--blue"
+                    >
+                        Export Aircraft JSON
+                    </button>
+                </div>
+
+                <div ref={this.cargoResult} class="skyward-result" />
+            </section>
+        );
+    }
+
     public render(): TVNode<HTMLDivElement> {
         return (
-            <div ref={this.gamepadUiViewRef} style="padding: 26px; margin-top: 24px; margin-bottom: 24px; background: radial-gradient(circle at top left, #1f2937, #0b1220 55%); height: 100%; overflow-y: auto;">
-                <h2 style="color: white; margin: 36px 0 12px 0; font-size: 28px; letter-spacing: 0.3px;">Skyward EFB</h2>
-                <div ref={this.statusText} style="font-size: 18px; margin: 6px 0; font-weight: 600;">Connecting...</div>
-                <div ref={this.aircraftText} style="font-size: 15px; color: #cbd5e1; margin-bottom: 14px;" />
-                <div ref={this.gameModeDebug} style="font-size: 13px; color: #fbbf24; margin-bottom: 4px;">{this.gmStatusText}</div>
-                <div ref={this.isInMenuDebug} style="font-size: 13px; color: #fbbf24; margin-bottom: 4px;">{this.menuStatusText}</div>
-                <div ref={this.postDebug} style="font-size: 12px; color: #f97316; margin-bottom: 4px;">{this.postStatusText}</div>
-                <div ref={this.connectionDebug} style="font-size: 12px; color: #a78bfa; margin-bottom: 12px;">{this.connectionStatusText}</div>
-                <div ref={this.massSummary} style="font-size: 15px; color: #d7e3ff; margin-bottom: 14px; line-height: 1.45;" />
-                <div style="color:#93c5fd; font-size:14px; margin-bottom:8px; font-weight:600;">
-                    Takeoff-safe payload planner (Atlas-like):
-                </div>
-                <div ref={this.payloadPlanner} style="margin-bottom: 14px;" />
+            <div ref={this.gamepadUiViewRef} class="skyward-efb-shell">
+                <aside class="skyward-sidebar">
+                    <div class="skyward-sidebar__brand">
+                        <div class="skyward-sidebar__title">Skyward EFB</div>
+                        <div class="skyward-sidebar__subtitle">Internal app sections</div>
+                    </div>
+                    <nav class="skyward-sidebar__nav">
+                        {this.renderSidebarButton("Overview", "overview", this.overviewNavButton)}
+                        {this.renderSidebarButton("SimConnect", "simconnect", this.simconnectNavButton)}
+                        {this.renderSidebarButton("Payload", "payload", this.payloadNavButton)}
+                    </nav>
+                </aside>
 
-                <div style="color:#93c5fd; font-size:14px; margin-bottom:8px; font-weight:600;">
-                    Cargo stations (weight lbs, with max limit):
-                </div>
-                <div ref={this.cargoEditors} style="margin-bottom: 16px; font-size: 13px; line-height: 1.6;" />
-
-                <div style="color:#93c5fd; font-size:14px; margin-bottom:8px; font-weight:600;">
-                    Baggage stations (weight lbs, with max limit):
-                </div>
-                <div ref={this.baggageEditors} style="margin-bottom: 16px; font-size: 13px; line-height: 1.6;" />
-
-                <div style="color:#93c5fd; font-size:14px; margin: 8px 0; font-weight:600;">
-                    Passenger/seat stations (occupancy pax, with max seat capacity):
-                </div>
-                <div ref={this.seatSummary} style="color:#c8d4ff; font-size:14px; margin: 0 0 10px 0;" />
-                <div ref={this.seatEditors} style="margin-bottom: 16px; font-size: 13px; line-height: 1.6;" />
-
-                <TTButton
-                    key="Load Cargo Preset"
-                    callback={(): void => { this.loadCargoPreset(); }}
-                />
-                <div style="height:8px;" />
-                <TTButton
-                    key="Send Plan to ATC (No Immediate Load)"
-                    callback={(): void => { this.sendPlannerConfigToAtcAndOpen(); }}
-                />
-                <div style="height:8px; margin-bottom: 12px" />
-                <TTButton
-                    key="Export Aircraft JSON"
-                    callback={(): void => { this.exportAircraftJson(); }}
-                />
-
-                <div ref={this.cargoResult} style="margin-top: 12px; font-size: 15px; font-weight: 600;" />
+                <main class="skyward-content">
+                    {this.renderOverviewSection()}
+                    {this.renderSimConnectSection()}
+                    {this.renderPayloadSection()}
+                </main>
             </div>
         );
     }

@@ -1,8 +1,533 @@
-.skyward-efb-app {
+.skyward-efb-app,
+.skyward-efb-shell {
   position: relative;
+  --skyward-bg: #08111d;
+  --skyward-bg-soft: #102033;
+  --skyward-panel: rgba(9, 18, 32, 0.78);
+  --skyward-panel-strong: rgba(8, 15, 28, 0.92);
+  --skyward-border: rgba(148, 163, 184, 0.22);
+  --skyward-border-strong: rgba(148, 163, 184, 0.34);
+  --skyward-text: #f8fafc;
+  --skyward-text-soft: #cbd5e1;
+  --skyward-text-muted: #94a3b8;
+  --skyward-accent: #7dd3fc;
+  --skyward-warning: #fbbf24;
+  --skyward-danger: #f87171;
+  --skyward-success: #3abb6a;
+  --skyward-info: #93c5fd;
+  --skyward-shadow: 0 28px 60px -34px rgba(2, 6, 23, 0.88);
+  --skyward-radius-lg: 24px;
+  --skyward-radius-md: 16px;
+  --skyward-radius-sm: 12px;
+}
 
+.skyward-efb-app {
   width: 100%;
   height: 100%;
-
   overflow: hidden;
+}
+
+.skyward-efb-shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 24px;
+  height: 100%;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(34, 197, 94, 0.15), transparent 26%),
+    radial-gradient(circle at bottom right, rgba(59, 130, 246, 0.14), transparent 28%),
+    linear-gradient(180deg, #122133 0%, #08111d 100%);
+  color: var(--skyward-text);
+  overflow: hidden;
+}
+
+.skyward-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px 18px;
+  background: linear-gradient(180deg, rgba(7, 14, 25, 0.92), rgba(10, 24, 40, 0.88));
+  border: 1px solid var(--skyward-border);
+  border-radius: var(--skyward-radius-lg);
+  box-shadow: var(--skyward-shadow);
+}
+
+.skyward-sidebar__brand {
+  display: grid;
+  gap: 6px;
+}
+
+.skyward-sidebar__title {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.skyward-sidebar__subtitle {
+  color: var(--skyward-text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+.skyward-sidebar__nav {
+  display: grid;
+  gap: 10px;
+}
+
+.skyward-sidebar__button,
+.skyward-action-button {
+  border: 1px solid transparent;
+  border-radius: var(--skyward-radius-sm);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    filter 120ms ease,
+    background-color 120ms ease;
+}
+
+.skyward-sidebar__button {
+  padding: 14px 12px;
+  text-align: left;
+  color: var(--skyward-text-soft);
+  background: rgba(15, 23, 42, 0.55);
+  border-color: rgba(148, 163, 184, 0.16);
+}
+
+.skyward-sidebar__button:hover,
+.skyward-sidebar__button--active {
+  color: var(--skyward-text);
+  border-color: rgba(125, 211, 252, 0.42);
+  background: linear-gradient(180deg, rgba(20, 184, 166, 0.2), rgba(15, 23, 42, 0.9));
+  box-shadow: 0 18px 28px -24px rgba(34, 211, 238, 0.75);
+}
+
+.skyward-sidebar__button:active,
+.skyward-action-button:active {
+  transform: translateY(1px);
+}
+
+.skyward-content {
+  min-width: 0;
+  height: 100%;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.skyward-section {
+  display: grid;
+  gap: 18px;
+  min-height: 100%;
+  padding: 8px 6px 24px;
+}
+
+.skyward-section--hidden {
+  display: none;
+}
+
+.skyward-section__header {
+  display: grid;
+  gap: 6px;
+}
+
+.skyward-section__title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.skyward-section__subtitle {
+  margin: 0;
+  color: var(--skyward-text-muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.skyward-overview-grid {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.skyward-overview-grid--hidden {
+  display: none;
+}
+
+.skyward-image-card,
+.skyward-overview-card,
+.skyward-overview-enroute {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--skyward-radius-md);
+  border: 1px solid var(--skyward-border-strong);
+  background-color: #0f172a;
+  box-shadow: var(--skyward-shadow);
+  isolation: isolate;
+}
+
+.skyward-image-card--square,
+.skyward-overview-card {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 0;
+}
+
+.skyward-image-card--panoramic,
+.skyward-overview-enroute {
+  display: none;
+  width: 100%;
+  min-width: 0;
+  height: 0;
+}
+
+.skyward-image-card--visible,
+.skyward-overview-enroute--visible {
+  display: block;
+}
+
+.skyward-image-card__media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+}
+
+.skyward-image-card__overlay,
+.skyward-overview-card__overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(2, 6, 23, 0.08) 18%, rgba(2, 6, 23, 0.82) 100%);
+}
+
+.skyward-image-card__content,
+.skyward-overview-card__content {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 0;
+  min-height: 0;
+  padding: 20px 20px 18px;
+  box-sizing: border-box;
+}
+
+.skyward-image-card__eyebrow,
+.skyward-overview-card__title {
+  align-self: start;
+  font-size: 17px;
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.skyward-image-card__body,
+.skyward-overview-card__text,
+.skyward-image-card__center-label,
+.skyward-overview-enroute__label {
+  text-shadow: 0 2px 12px rgba(2, 6, 23, 0.88);
+}
+
+.skyward-image-card__body,
+.skyward-overview-card__text {
+  align-self: end;
+  max-width: 82%;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 34px;
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1.04;
+  text-shadow: 0 3px 14px rgba(0, 0, 0, 0.86);
+}
+
+.skyward-image-card__body--compact {
+  font-size: 26px;
+  line-height: 1.06;
+}
+
+.skyward-image-card__center-label,
+.skyward-overview-enroute__label {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.skyward-meta-list {
+  display: grid;
+  gap: 10px;
+  padding: 18px 20px;
+  background: linear-gradient(180deg, rgba(6, 12, 24, 0.78), rgba(12, 23, 40, 0.68));
+  border: 1px solid var(--skyward-border);
+  border-radius: var(--skyward-radius-md);
+  box-shadow: var(--skyward-shadow);
+}
+
+.skyward-meta-row {
+  color: var(--skyward-text-soft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.skyward-meta-row--hidden {
+  display: none;
+}
+
+.skyward-status-line,
+.skyward-info-line,
+.skyward-debug-line,
+.skyward-payload-summary,
+.skyward-seat-summary,
+.skyward-result {
+  line-height: 1.5;
+}
+
+.skyward-status-line {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.skyward-status-line--success,
+.skyward-result--success {
+  color: var(--skyward-success);
+}
+
+.skyward-status-line--danger,
+.skyward-result--danger {
+  color: var(--skyward-danger);
+}
+
+.skyward-status-line--warning,
+.skyward-result--warning {
+  color: var(--skyward-warning);
+}
+
+.skyward-status-line--info,
+.skyward-result--info {
+  color: var(--skyward-info);
+}
+
+.skyward-info-line {
+  color: var(--skyward-text-soft);
+  font-size: 15px;
+}
+
+.skyward-debug-line {
+  font-size: 13px;
+}
+
+.skyward-debug-line--warning {
+  color: var(--skyward-warning);
+}
+
+.skyward-debug-line--danger {
+  color: #fb923c;
+}
+
+.skyward-debug-line--info {
+  color: #c4b5fd;
+}
+
+.skyward-payload-summary {
+  color: #d7e3ff;
+  font-size: 15px;
+}
+
+.skyward-subsection {
+  display: grid;
+  gap: 10px;
+}
+
+.skyward-subsection__title {
+  color: var(--skyward-accent);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.skyward-planner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 148px;
+  gap: 10px;
+  align-items: center;
+  padding: 14px;
+  background: linear-gradient(180deg, #1f2937, #111827);
+  border: 1px solid var(--skyward-border-strong);
+  border-radius: var(--skyward-radius-md);
+}
+
+.skyward-planner__slider {
+  width: 100%;
+  height: 30px;
+  margin: 6px 0;
+  transform: scaleY(1.6);
+  transform-origin: center;
+  accent-color: #22c55e;
+  cursor: pointer;
+}
+
+.skyward-planner__detail {
+  grid-column: 1 / -1;
+  color: #cfe7d0;
+  font-size: 13px;
+}
+
+.skyward-editor-list {
+  display: grid;
+  gap: 8px;
+}
+
+.skyward-editor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 78px;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  background: linear-gradient(180deg, #111827, #0b1220);
+  border: 1px solid var(--skyward-border-strong);
+  border-radius: var(--skyward-radius-sm);
+}
+
+.skyward-editor-row__info {
+  color: #ddd;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.skyward-editor-input {
+  width: 100%;
+  height: 36px;
+  padding: 6px 8px;
+  color: var(--skyward-text);
+  background: #020617;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.skyward-editor-input:focus {
+  outline: none;
+  border-color: rgba(125, 211, 252, 0.58);
+  box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.12);
+}
+
+.skyward-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.skyward-action-button {
+  min-height: 36px;
+  padding: 0 14px;
+  color: var(--skyward-text);
+}
+
+.skyward-action-button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+.skyward-action-button--blue {
+  background: linear-gradient(180deg, #3b82f6, #1d4ed8);
+  border-color: #60a5fa;
+  box-shadow: 0 10px 22px -14px rgba(37, 99, 235, 0.45);
+}
+
+.skyward-action-button--green {
+  background: linear-gradient(180deg, #22c55e, #15803d);
+  border-color: #4ade80;
+  box-shadow: 0 10px 22px -14px rgba(34, 197, 94, 0.45);
+}
+
+.skyward-action-button--teal {
+  background: linear-gradient(180deg, #14b8a6, #0f766e);
+  border-color: #2dd4bf;
+  box-shadow: 0 10px 22px -14px rgba(20, 184, 166, 0.45);
+}
+
+.skyward-action-button--wide {
+  min-width: 140px;
+}
+
+.skyward-seat-summary {
+  color: #c8d4ff;
+  font-size: 14px;
+}
+
+.skyward-result {
+  min-height: 24px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.skyward-empty-state {
+  color: #a3a3a3;
+  font-size: 14px;
+}
+
+@media (max-width: 1280px) {
+  .skyward-efb-shell {
+    grid-template-columns: 1fr;
+    gap: 18px;
+    padding: 18px;
+    overflow: auto;
+  }
+
+  .skyward-sidebar {
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .skyward-sidebar__nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .skyward-overview-grid {
+    gap: 12px;
+  }
+
+  .skyward-planner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .skyward-planner__detail {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 860px) {
+  .skyward-sidebar__button {
+    text-align: center;
+  }
+
+  .skyward-sidebar__nav {
+    grid-template-columns: 1fr;
+  }
+
+  .skyward-editor-row {
+    grid-template-columns: 1fr;
+  }
 }
