@@ -1,0 +1,26 @@
+# Node / frontend build outputs
+**/node_modules/
+**/dist/
+.env
+*.env
+
+# MSFS generated package outputs
+/Packages/
+/PackagesMetadata/
+/_PackageInt/
+*.xml.user
+
+# .NET / Visual Studio outputs
+**/bin/
+**/obj/
+.vs/
+
+# Legacy unused sample folder
+/PackageSources/TemplateApp/
+
+# Root-local artifacts
+/package-lock.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

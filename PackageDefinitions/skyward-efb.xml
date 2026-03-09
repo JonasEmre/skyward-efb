@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AssetPackage Version="0.1.10">
+	<ItemSettings>
+		<ContentType>MISC</ContentType>
+		<Title>Skyward EFB</Title>
+		<Manufacturer/>
+		<Creator>Asobo Studio</Creator>
+	</ItemSettings>
+	<Flags>
+		<VisibleInStore>false</VisibleInStore>
+		<CanBeReferenced>true</CanBeReferenced>
+	</Flags>
+	<PackageOrderHint>MISC</PackageOrderHint>
+	<AssetGroups>
+		<AssetGroup Name="ContentInfo">
+			<Type Version="0">ContentInfo</Type>
+			<Flags>
+				<FSXCompatibility>false</FSXCompatibility>
+			</Flags>
+			<AssetDir>PackageDefinitions\skyward-efb\ContentInfo</AssetDir>
+			<OutputDir>ContentInfo\skyward-efb</OutputDir>
+		</AssetGroup>
+		<AssetGroup Name="skyward_efb_app">
+			<Type Version="0">Copy</Type>
+			<Flags>
+				<FSXCompatibility>false</FSXCompatibility>
+			</Flags>
+			<AssetDir>PackageSources\SkywardEfbApp\dist\</AssetDir>
+			<OutputDir>.\html_ui\efb_ui\efb_apps\SkywardEfbApp\</OutputDir>
+		</AssetGroup>
+	</AssetGroups>
+</AssetPackage>
