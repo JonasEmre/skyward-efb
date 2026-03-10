@@ -1,9 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <path
-    fill="#f8fafc"
-    stroke="#08111d"
-    stroke-width="3"
-    stroke-linejoin="round"
-    d="M32 4l8 18 16 6v7l-16-2-4 9 8 12v6l-12-8-12 8v-6l8-12-4-9-16 2v-7l16-6 8-18z"
-  />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#FFFF"><path d="M280-80v-100l120-84v-144L80-280v-120l320-224v-176q0-33 23.5-56.5T480-880q33 0 56.5 23.5T560-800v176l320 224v120L560-408v144l120 84v100l-200-60-200 60Z"/></svg>
