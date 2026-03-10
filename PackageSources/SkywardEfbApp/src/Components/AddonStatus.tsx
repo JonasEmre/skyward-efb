@@ -2,6 +2,7 @@ import { GamepadUiView, RequiredProps, TVNode, UiViewProps } from "@efb/efb-api"
 import { FSComponent, NodeReference } from "@microsoft/msfs-sdk";
 import { buildOverviewViewModel, OverviewViewModel } from "./AddonStatusOverview";
 import { syncOverviewCardLayout } from "./OverviewCardLayout";
+import { PanelLayoutController } from "./PanelLayoutController";
 
 declare const SimVar: {
     GetSimVarValue: (name: string, unit: string) => number;
@@ -43,6 +44,9 @@ interface StatusData {
     airport_match?: boolean;
     aircraft_match?: boolean;
     payload_match?: boolean;
+    required_airport?: string;
+    required_aircraft?: string;
+    required_payload_lbs?: number | null;
     pilot_seat_count?: number;
     copilot_seat_count?: number;
     passenger_seat_count?: number;
@@ -216,6 +220,9 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private readonly airportCardText = FSComponent.createRef<HTMLDivElement>();
     private readonly aircraftCardText = FSComponent.createRef<HTMLDivElement>();
     private readonly payloadCardText = FSComponent.createRef<HTMLDivElement>();
+    private readonly airportCardDetail = FSComponent.createRef<HTMLDivElement>();
+    private readonly aircraftCardDetail = FSComponent.createRef<HTMLDivElement>();
+    private readonly payloadCardDetail = FSComponent.createRef<HTMLDivElement>();
     private readonly overviewProgress = FSComponent.createRef<HTMLDivElement>();
     private readonly overviewParked = FSComponent.createRef<HTMLDivElement>();
     private readonly overviewUtc = FSComponent.createRef<HTMLDivElement>();
@@ -239,6 +246,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private refreshTimer?: number;
     private heartbeatTimer?: number;
     private overviewLayoutRaf?: number;
+    private panelLayoutController?: PanelLayoutController;
 
     private massBalanceListener?: MassBalanceListener;
     private massBalanceReady = false;
@@ -310,10 +318,16 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private activeSection: ActiveSection = "overview";
 
     public onAfterRender(): void {
+        if (this.gamepadUiViewRef.instance) {
+            this.panelLayoutController = new PanelLayoutController(
+                this.gamepadUiViewRef.instance,
+                () => { this.scheduleOverviewLayoutSync(); },
+            );
+            this.panelLayoutController.start();
+        }
         this.syncSectionVisibility();
         this.bindStaticButtonHandlers();
         this.updateOverview(buildOverviewViewModel({}));
-        window.addEventListener("resize", this.handleWindowResize);
         this.fetchStatus();
         this.initMassBalanceListener();
         this.initAircraftInfoListener();
@@ -330,7 +344,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
     public destroy(): void {
         this.isDestroyed = true;
-        window.removeEventListener("resize", this.handleWindowResize);
+        this.panelLayoutController?.destroy();
         if (this.statusTimer !== undefined) {
             window.clearInterval(this.statusTimer);
         }
@@ -496,10 +510,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.syncSectionVisibility();
     }
 
-    private readonly handleWindowResize = (): void => {
-        this.scheduleOverviewLayoutSync();
-    };
-
     private scheduleOverviewLayoutSync(): void {
         if (this.overviewLayoutRaf !== undefined) {
             window.cancelAnimationFrame(this.overviewLayoutRaf);
@@ -615,18 +625,25 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }
 
         const cardMap = [
-            [this.airportCardMedia, this.airportCardText, model.cards.airport],
-            [this.aircraftCardMedia, this.aircraftCardText, model.cards.aircraft],
-            [this.payloadCardMedia, this.payloadCardText, model.cards.payload],
+            [this.airportCardMedia, this.airportCardText, this.airportCardDetail, model.cards.airport],
+            [this.aircraftCardMedia, this.aircraftCardText, this.aircraftCardDetail, model.cards.aircraft],
+            [this.payloadCardMedia, this.payloadCardText, this.payloadCardDetail, model.cards.payload],
         ] as const;
 
-        for (const [mediaRef, textRef, card] of cardMap) {
+        for (const [mediaRef, textRef, detailRef, card] of cardMap) {
             if (mediaRef.instance) {
                 mediaRef.instance.src = card.backgroundImage;
             }
             if (textRef.instance) {
                 textRef.instance.textContent = card.statusText;
-                textRef.instance.classList.toggle("skyward-image-card__body--compact", card.statusText.length > 82);
+                textRef.instance.classList.toggle(
+                    "skyward-image-card__body--compact",
+                    card.statusText.length > 42 || card.detailText.length > 26,
+                );
+            }
+            if (detailRef.instance) {
+                detailRef.instance.textContent = card.detailText;
+                detailRef.instance.classList.toggle("skyward-image-card__detail--hidden", card.detailText.length === 0);
             }
         }
 
@@ -2410,6 +2427,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         cardRef: NodeReference<HTMLDivElement>,
         mediaRef: NodeReference<HTMLImageElement>,
         textRef: NodeReference<HTMLDivElement>,
+        detailRef: NodeReference<HTMLDivElement>,
     ): TVNode<HTMLDivElement> {
         return (
             <div ref={cardRef} class="skyward-image-card skyward-image-card--square skyward-overview-card">
@@ -2417,7 +2435,10 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                 <div class="skyward-image-card__overlay" />
                 <div class="skyward-image-card__content">
                     <div class="skyward-image-card__eyebrow">{title}</div>
-                    <div ref={textRef} class="skyward-image-card__body" />
+                    <div class="skyward-image-card__footer">
+                        <div ref={textRef} class="skyward-image-card__body" />
+                        <div ref={detailRef} class="skyward-image-card__detail skyward-image-card__detail--hidden" />
+                    </div>
                 </div>
             </div>
         );
@@ -2427,9 +2448,9 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         return (
             <section ref={this.overviewSection} class="skyward-section skyward-section--overview">
                 <div ref={this.overviewGrid} class="skyward-overview-grid">
-                    {this.renderOverviewCard("Airport", this.airportCard, this.airportCardMedia, this.airportCardText)}
-                    {this.renderOverviewCard("Aircraft", this.aircraftCard, this.aircraftCardMedia, this.aircraftCardText)}
-                    {this.renderOverviewCard("Payload", this.payloadCard, this.payloadCardMedia, this.payloadCardText)}
+                    {this.renderOverviewCard("Airport", this.airportCard, this.airportCardMedia, this.airportCardText, this.airportCardDetail)}
+                    {this.renderOverviewCard("Aircraft", this.aircraftCard, this.aircraftCardMedia, this.aircraftCardText, this.aircraftCardDetail)}
+                    {this.renderOverviewCard("Payload", this.payloadCard, this.payloadCardMedia, this.payloadCardText, this.payloadCardDetail)}
                 </div>
 
                 <div ref={this.enRouteCard} class="skyward-image-card skyward-image-card--panoramic skyward-overview-enroute">
@@ -2450,7 +2471,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
     private renderSimConnectSection(): TVNode<HTMLDivElement> {
         return (
-            <section ref={this.simconnectSection} class="skyward-section skyward-section--hidden">
+            <section ref={this.simconnectSection} class="skyward-section skyward-section--simconnect skyward-section--hidden">
                 <div class="skyward-section__header">
                     <h2 class="skyward-section__title">SimConnect</h2>
                     <p class="skyward-section__subtitle">Connection, game state capture and EFB posting diagnostics.</p>

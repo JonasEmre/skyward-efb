@@ -19,6 +19,9 @@ export interface PreviewStatusData {
     airport_match?: boolean;
     aircraft_match?: boolean;
     payload_match?: boolean;
+    required_airport?: string;
+    required_aircraft?: string;
+    required_payload_lbs?: number | null;
     flight_state?: string;
     flight_progress?: string[];
     parked_label?: string;

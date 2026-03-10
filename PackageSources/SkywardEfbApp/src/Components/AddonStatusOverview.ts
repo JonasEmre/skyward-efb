@@ -4,6 +4,9 @@ export type OverviewStatusInput = {
     airport_match?: boolean;
     aircraft_match?: boolean;
     payload_match?: boolean;
+    required_airport?: string;
+    required_aircraft?: string;
+    required_payload_lbs?: number | null;
     flight_progress?: string[];
     flight_state?: string;
     parked_label?: string;
@@ -15,6 +18,7 @@ export type OverviewStatusInput = {
 export interface OverviewCardViewModel {
     title: string;
     statusText: string;
+    detailText: string;
     backgroundImage: string;
 }
 
@@ -52,6 +56,43 @@ function formatMatchText(title: string, isMatch: boolean): string {
     return `${title} ${isMatch ? "match" : "mismatch"}`;
 }
 
+function formatRequiredPayload(requiredPayloadLbs?: number | null): string {
+    const resolved = Number(requiredPayloadLbs);
+    if (!Number.isFinite(resolved) || resolved <= 0) {
+        return "";
+    }
+    return `Required: ${Math.round(resolved)} lbs`;
+}
+
+function formatRequiredText(
+    title: string,
+    isMatch: boolean,
+    status: OverviewStatusInput,
+): string {
+    if (isMatch) {
+        return "";
+    }
+
+    switch (title) {
+        case "Airport": {
+            const requiredAirport = typeof status.required_airport === "string"
+                ? status.required_airport.trim().toUpperCase()
+                : "";
+            return requiredAirport ? `Required: ${requiredAirport}` : "";
+        }
+        case "Aircraft": {
+            const requiredAircraft = typeof status.required_aircraft === "string"
+                ? status.required_aircraft.trim()
+                : "";
+            return requiredAircraft ? `Required: ${requiredAircraft}` : "";
+        }
+        case "Payload":
+            return formatRequiredPayload(status.required_payload_lbs);
+        default:
+            return "";
+    }
+}
+
 function formatSimUtc(hour?: number | null, minute?: number | null): string {
     if (typeof hour === "number" && typeof minute === "number") {
         return `Sim UTC: ${hour.toString().padStart(2, "0")}:${minute
@@ -75,6 +116,7 @@ function formatSimState(label?: string): string {
 function buildCardViewModel(
     title: string,
     isMatch: boolean | undefined,
+    status: OverviewStatusInput,
     matchImage: string,
     mismatchImage: string,
 ): OverviewCardViewModel {
@@ -82,6 +124,7 @@ function buildCardViewModel(
     return {
         title,
         statusText: formatMatchText(title, resolvedMatch),
+        detailText: formatRequiredText(title, resolvedMatch, status),
         backgroundImage: resolvedMatch ? matchImage : mismatchImage,
     };
 }
@@ -97,18 +140,21 @@ export function buildOverviewViewModel(status: OverviewStatusInput): OverviewVie
             airport: buildCardViewModel(
                 "Airport",
                 status.airport_match,
+                status,
                 simStateAssets.airport.match,
                 simStateAssets.airport.mismatch,
             ),
             aircraft: buildCardViewModel(
                 "Aircraft",
                 status.aircraft_match,
+                status,
                 simStateAssets.aircraft.match,
                 simStateAssets.aircraft.mismatch,
             ),
             payload: buildCardViewModel(
                 "Payload",
                 status.payload_match,
+                status,
                 simStateAssets.payload.match,
                 simStateAssets.payload.mismatch,
             ),

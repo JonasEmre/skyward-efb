@@ -1,4 +1,5 @@
 import { buildOverviewViewModel } from "../Components/AddonStatusOverview";
+import { PanelLayoutController } from "../Components/PanelLayoutController";
 import { syncOverviewCardLayout } from "../Components/OverviewCardLayout";
 import "./index.scss";
 import { PREVIEW_SCENARIOS } from "./PreviewScenarios";
@@ -33,6 +34,7 @@ const previewState: {
 
 const runtime = installPreviewRuntimeMocks(PREVIEW_SCENARIOS[previewState.activeScenarioKey]);
 let previewScaleRaf = 0;
+let previewPanelLayoutController: PanelLayoutController | undefined;
 
 function escapeHtml(value: string): string {
     return value
@@ -84,7 +86,10 @@ function renderOverviewSection(scenario: PreviewScenario, status: PreviewStatusD
                     <div class="skyward-image-card__overlay"></div>
                     <div class="skyward-image-card__content">
                         <div class="skyward-image-card__eyebrow">${escapeHtml(card.title)}</div>
-                        <div class="skyward-image-card__body${card.statusText.length > 82 ? " skyward-image-card__body--compact" : ""}">${escapeHtml(card.statusText)}</div>
+                        <div class="skyward-image-card__footer">
+                            <div class="skyward-image-card__body${card.statusText.length > 42 || card.detailText.length > 26 ? " skyward-image-card__body--compact" : ""}">${escapeHtml(card.statusText)}</div>
+                            <div class="skyward-image-card__detail${card.detailText ? "" : " skyward-image-card__detail--hidden"}">${escapeHtml(card.detailText)}</div>
+                        </div>
                     </div>
                 </div>
             `,
@@ -272,7 +277,14 @@ function renderPreviewPage(): void {
             </div>
         </div>
     `;
-    syncOverviewCardLayout(previewRoot);
+    previewPanelLayoutController?.destroy();
+    const shell = previewRoot.querySelector<HTMLElement>(".skyward-efb-shell");
+    if (shell) {
+        previewPanelLayoutController = new PanelLayoutController(shell, () => {
+            syncOverviewCardLayout(shell);
+        });
+        previewPanelLayoutController.start();
+    }
     requestPreviewScaleSync();
 }
 
@@ -300,6 +312,7 @@ previewRoot.addEventListener("click", (event) => {
 });
 
 window.addEventListener("beforeunload", () => {
+    previewPanelLayoutController?.destroy();
     runtime.restore();
 });
 
