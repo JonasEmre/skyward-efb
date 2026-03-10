@@ -1,6 +1,7 @@
 import { GamepadUiView, RequiredProps, TVNode, UiViewProps } from "@efb/efb-api";
 import { FSComponent, NodeReference } from "@microsoft/msfs-sdk";
 import { buildOverviewViewModel, OverviewViewModel } from "./AddonStatusOverview";
+import { GameStateReading, GameStateTracker } from "../GameStateTracker";
 import { syncOverviewCardLayout } from "./OverviewCardLayout";
 import { PanelLayoutController } from "./PanelLayoutController";
 
@@ -94,13 +95,15 @@ interface EfbStateResponse {
     canonical_ui_state?: string;
 }
 
-type CaptureSource = "event" | "snapshot" | "retry";
+type CaptureSource = "event" | "snapshot" | "hydrate" | "cache";
 
 interface RawStateSample {
     gameMode: number;
     isInMenu: boolean;
     label: string;
     source: CaptureSource;
+    gameModeTrusted: boolean;
+    isInMenuTrusted: boolean;
     firstSeenAtMs: number;
     lastSeenAtMs: number;
     signature: string;
@@ -193,7 +196,6 @@ type ActiveSection = "overview" | "simconnect" | "payload";
 export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps> {
     public readonly tabName = AddonStatus.name;
     private static readonly STATE_CONFIRM_MS = 250;
-    private static readonly SNAPSHOT_RETRY_DELAYS_MS = [500, 1500];
     private static readonly DEFAULT_PAX_WEIGHT_LBS = 170;
     private static readonly EFB_STATE_HEARTBEAT_MS = 2000;
     private static readonly MASS_BALANCE_HEARTBEAT_MS = 2000;
@@ -259,13 +261,8 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private cachedFuelUsageGph: number | null = null;
     private cachedFuelDensityLbsPerGallon: number | null = null;
 
-    private gameModeSub?: { destroy: () => void };
-    private isInMenuSub?: { destroy: () => void };
-    private gameModeManager?: any;
-    private gameModeInitRetryTimer?: number;
+    private gameStateSub?: { destroy: () => void };
     private isDestroyed = false;
-    private currentGameMode?: number;
-    private currentIsInMenu?: boolean;
     private readonly clientStartedAtMs = Date.now();
     private readonly clientSessionId = `efb-${this.clientStartedAtMs}-${Math.random().toString(36).slice(2, 10)}`;
     private efbStateSeq = 0;
@@ -275,7 +272,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private pushInFlight = false;
     private pendingRepostReason?: string;
     private confirmStateTimer?: number;
-    private snapshotRetryTimers: number[] = [];
     private latestRawSample?: RawStateSample;
     private confirmedState?: RawStateSample;
     private lastPublishedSignature?: string;
@@ -332,7 +328,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.initMassBalanceListener();
         this.initAircraftInfoListener();
         this.initFlightPerformanceListener();
-        this.initGameModeListener();
+        this.initGameStateTracking();
 
         this.statusTimer = window.setInterval(() => this.fetchStatus(), 3000);
         this.refreshTimer = window.setInterval(() => this.refreshMassAndBalanceData(), 2000);
@@ -363,15 +359,8 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         if (this.confirmStateTimer !== undefined) {
             window.clearTimeout(this.confirmStateTimer);
         }
-        if (this.gameModeInitRetryTimer !== undefined) {
-            window.clearTimeout(this.gameModeInitRetryTimer);
-        }
-        this.snapshotRetryTimers.forEach(timer => window.clearTimeout(timer));
-        if (this.gameModeSub) {
-            this.gameModeSub.destroy();
-        }
-        if (this.isInMenuSub) {
-            this.isInMenuSub.destroy();
+        if (this.gameStateSub) {
+            this.gameStateSub.destroy();
         }
         if (this.aircraftLoadedSub) {
             this.aircraftLoadedSub.destroy();
@@ -431,49 +420,22 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }) as unknown as FlightPerformanceListener;
     }
 
-    private scheduleGameModeInitRetry(): void {
-        if (this.isDestroyed || this.gameModeInitRetryTimer !== undefined || this.gameModeSub || this.isInMenuSub) {
+    private initGameStateTracking(): void {
+        if (this.isDestroyed || this.gameStateSub) {
             return;
         }
-        this.gameModeInitRetryTimer = window.setTimeout(() => {
-            this.gameModeInitRetryTimer = undefined;
-            this.initGameModeListener();
-        }, 500);
-    }
-
-    private initGameModeListener(): void {
-        if (this.isDestroyed || this.gameModeSub || this.isInMenuSub) {
-            return;
-        }
-        const gm = (window as any).GAME_MODE_MANAGER;
-        if (!gm || !gm.gameMode || !gm.isInMenu || typeof gm.gameMode.sub !== "function" || typeof gm.isInMenu.sub !== "function") {
-            this.updateGameModeDebug("GameMode: (manager missing)");
-            this.updateIsInMenuDebug("IsInMenu: (manager missing)");
-            this.scheduleGameModeInitRetry();
-            return;
-        }
-        this.gameModeManager = gm;
-        if (typeof gm.setBus === "function" && this.props?.appViewService?.bus) {
-            gm.setBus(this.props.appViewService.bus);
+        if (this.props?.appViewService?.bus) {
+            GameStateTracker.instance.initialize(this.props.appViewService.bus);
         }
 
-        this.gameModeSub = gm.gameMode.sub((value: number) => {
-            this.currentGameMode = value;
-            this.captureRawGameState("event", "GameModeChanged");
+        this.gameStateSub = GameStateTracker.instance.sub((reading: GameStateReading) => {
+            this.captureGameStateReading(reading, reading.source === "event" ? "tracker_event" : "tracker_update");
         });
 
-        this.isInMenuSub = gm.isInMenu.sub((value: boolean) => {
-            this.currentIsInMenu = value;
-            this.captureRawGameState("event", "IsInMenuUpdate");
-        });
-
-        this.captureRawGameState("snapshot", "initial_snapshot");
-        AddonStatus.SNAPSHOT_RETRY_DELAYS_MS.forEach(delayMs => {
-            const timer = window.setTimeout(() => {
-                this.captureRawGameState("retry", `snapshot_retry_${delayMs}`);
-            }, delayMs);
-            this.snapshotRetryTimers.push(timer);
-        });
+        if (!GameStateTracker.instance.getCurrentReading()) {
+            this.updateGameModeDebug("GameMode: (warming)");
+            this.updateIsInMenuDebug("IsInMenu: (warming)");
+        }
         this.updatePostDebug("EFB POST: warming up state capture");
     }
 
@@ -768,7 +730,12 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         const sourceTsMs = Date.now();
         const state = this.confirmedState;
         const stabilityMs = Math.max(0, sourceTsMs - state.firstSeenAtMs);
-        const canonicalUiState = this.deriveCanonicalUiState(state.gameMode, state.isInMenu);
+        const canonicalUiState = this.deriveCanonicalUiState(
+            state.gameMode,
+            state.isInMenu,
+            state.gameModeTrusted,
+            state.isInMenuTrusted,
+        );
         try {
             const response = await fetch("http://127.0.0.1:5000/efb-state", {
                 method: "POST",
@@ -780,6 +747,8 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                     is_in_menu: state.isInMenu,
                     game_mode: state.gameMode,
                     game_mode_label: state.label,
+                    game_mode_trusted: state.gameModeTrusted,
+                    is_in_menu_trusted: state.isInMenuTrusted,
                     canonical_ui_state: canonicalUiState,
                     seq,
                     source_ts_ms: sourceTsMs,
@@ -1011,61 +980,29 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.queuePushEfbState("heartbeat", true);
     }
 
-    private captureRawGameState(source: CaptureSource, reason: string): void {
-        const snapshot = this.readGameModeSnapshot(source);
-        if (!snapshot) {
-            this.updatePostDebug(`EFB POST: warming up (${reason})`);
-            return;
-        }
-        this.recordRawState(snapshot);
-        this.updateGameModeDebug(
-            `GameMode: ${snapshot.gameMode} ${snapshot.label || "(empty)"} | source=${snapshot.source}`
-        );
-        this.updateIsInMenuDebug(
-            `IsInMenu: ${snapshot.isInMenu} | pending=${this.confirmedState?.signature === snapshot.signature ? "confirmed" : "pending"}`
-        );
-        this.scheduleConfirmation(snapshot.signature, reason);
-    }
-
-    private readGameModeSnapshot(source: CaptureSource): RawStateSample | undefined {
-        const gm = this.gameModeManager;
-        if (!gm) {
-            return undefined;
-        }
-        const gameModeValue = this.readSubjectValue<number>(gm.gameMode, this.currentGameMode);
-        const isInMenuValue = this.readSubjectValue<boolean>(gm.isInMenu, this.currentIsInMenu);
-        if (typeof gameModeValue !== "number" || typeof isInMenuValue !== "boolean") {
-            return undefined;
-        }
-        this.currentGameMode = gameModeValue;
-        this.currentIsInMenu = isInMenuValue;
+    private captureGameStateReading(reading: GameStateReading, reason: string): void {
         const nowMs = Date.now();
-        const signature = `${gameModeValue}|${isInMenuValue}`;
-        return {
-            gameMode: gameModeValue,
-            isInMenu: isInMenuValue,
-            label: this.mapGameModeLabel(gameModeValue),
-            source,
+        const snapshot: RawStateSample = {
+            gameMode: reading.gameMode,
+            isInMenu: reading.isInMenu,
+            label: reading.label,
+            source: reading.source as CaptureSource,
+            gameModeTrusted: reading.gameModeTrusted,
+            isInMenuTrusted: reading.isInMenuTrusted,
             firstSeenAtMs: nowMs,
             lastSeenAtMs: nowMs,
-            signature
+            signature: `${reading.gameMode}|${reading.isInMenu}|${reading.gameModeTrusted}|${reading.isInMenuTrusted}`
         };
-    }
-
-    private readSubjectValue<T>(subject: any, fallback: T | undefined): T | undefined {
-        if (subject && typeof subject.get === "function") {
-            const value = subject.get();
-            if (value !== undefined) {
-                return value as T;
-            }
-        }
-        if (subject && typeof subject.getValue === "function") {
-            const value = subject.getValue();
-            if (value !== undefined) {
-                return value as T;
-            }
-        }
-        return fallback;
+        this.recordRawState(snapshot);
+        this.updateGameModeDebug(
+            `GameMode: ${snapshot.gameMode} ${snapshot.label || "(empty)"} `
+            + `| source=${snapshot.source} | trusted=${snapshot.gameModeTrusted}`
+        );
+        this.updateIsInMenuDebug(
+            `IsInMenu: ${snapshot.isInMenu} | pending=${this.confirmedState?.signature === snapshot.signature ? "confirmed" : "pending"} `
+            + `| trusted=${reading.isInMenuTrusted}`
+        );
+        this.scheduleConfirmation(snapshot.signature, reason);
     }
 
     private recordRawState(sample: RawStateSample): void {
@@ -1112,24 +1049,12 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.queuePushEfbState(reason);
     }
 
-    private mapGameModeLabel(gameMode: number): string {
-        switch (gameMode) {
-            case 0:
-                return "";
-            case 1:
-                return "CAREER GAMEMODE";
-            case 2:
-                return "CHALLENGE GAMEMODE";
-            case 3:
-                return "DISCOVERY GAMEMODE";
-            case 4:
-                return "FREEFLIGHT GAMEMODE";
-            default:
-                return "UNKNOWN GAMEMODE";
-        }
-    }
-
-    private deriveCanonicalUiState(gameMode: number, isInMenu: boolean): string {
+    private deriveCanonicalUiState(
+        gameMode: number,
+        isInMenu: boolean,
+        gameModeTrusted: boolean,
+        isInMenuTrusted: boolean,
+    ): string {
         if (gameMode === 4 && isInMenu === false) {
             return "IN_FLIGHT";
         }
@@ -1145,8 +1070,14 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         if (gameMode === 3 && isInMenu === true) {
             return "MENU_DISCOVERY";
         }
-        if (gameMode === 0 && isInMenu === true) {
+        if (gameMode === 0 && isInMenu === false) {
+            return "IN_FLIGHT";
+        }
+        if (gameMode === 0 && isInMenu === true && gameModeTrusted === true) {
             return "MAIN_MENU";
+        }
+        if (gameMode === 0 && isInMenu === true && gameModeTrusted === false) {
+            return "PAUSED";
         }
         return "UNKNOWN";
     }

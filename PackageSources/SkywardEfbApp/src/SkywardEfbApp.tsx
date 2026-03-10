@@ -11,6 +11,7 @@ import {
 } from "@efb/efb-api";
 import { FSComponent, VNode } from "@microsoft/msfs-sdk";
 import { AddonStatus } from "./Components/AddonStatus";
+import { GameStateTracker } from "./GameStateTracker";
 
 import "./SkywardEfbApp.scss";
 
@@ -135,6 +136,7 @@ class SkywardEfbApp extends App {
    */
   public async install(_props: AppInstallProps): Promise<void> {
     Efb.loadCss(`${BASE_URL}/SkywardEfbApp.css`);
+    GameStateTracker.instance.initialize(this.bus);
     return Promise.resolve();
   }
 
