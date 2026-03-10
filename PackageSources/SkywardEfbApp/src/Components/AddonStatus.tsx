@@ -1,7 +1,7 @@
 import { GamepadUiView, RequiredProps, TVNode, UiViewProps } from "@efb/efb-api";
 import { FSComponent, NodeReference } from "@microsoft/msfs-sdk";
 import { buildOverviewViewModel, OverviewViewModel } from "./AddonStatusOverview";
-import { GameStateReading, GameStateTracker } from "../GameStateTracker";
+import { GameStateReading, GameStateTracker, GameStateTrackerDebugSnapshot } from "../GameStateTracker";
 import { syncOverviewCardLayout } from "./OverviewCardLayout";
 import { PanelLayoutController } from "./PanelLayoutController";
 
@@ -109,6 +109,46 @@ interface RawStateSample {
     signature: string;
 }
 
+interface ClientDebugEntry {
+    ts_ms: number;
+    stage: string;
+    reason: string;
+    signature?: string;
+    game_mode?: number;
+    is_in_menu?: boolean;
+    game_mode_trusted?: boolean;
+    is_in_menu_trusted?: boolean;
+    source?: CaptureSource;
+    canonical_ui_state?: string;
+    seq?: number;
+    note?: string;
+}
+
+interface ClientDebugPayload {
+    tracker: GameStateTrackerDebugSnapshot;
+    pipeline: {
+        client_session_id: string;
+        client_started_at_ms: number;
+        latest_raw_signature?: string;
+        latest_raw_source?: CaptureSource;
+        latest_raw_age_ms?: number;
+        confirmed_signature?: string;
+        confirmed_at_ms?: number;
+        confirmed_age_ms?: number;
+        confirmed_canonical_ui_state?: string;
+        last_post_seq?: number;
+        last_post_at_ms?: number;
+        last_post_result: string;
+        last_post_reason: string;
+        pending_repost_reason?: string;
+        push_queued: boolean;
+        push_in_flight: boolean;
+        duplicate_suppressed_count: number;
+        post_failure_count: number;
+    };
+    recent_events: ClientDebugEntry[];
+}
+
 type PayloadStationKind = "pax" | "cargo" | "baggage" | "unknown";
 
 interface PayloadStation {
@@ -199,6 +239,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private static readonly DEFAULT_PAX_WEIGHT_LBS = 170;
     private static readonly EFB_STATE_HEARTBEAT_MS = 2000;
     private static readonly MASS_BALANCE_HEARTBEAT_MS = 2000;
+    private static readonly DEBUG_HISTORY_LIMIT = 25;
 
     private readonly overviewSection = FSComponent.createRef<HTMLDivElement>();
     private readonly simconnectSection = FSComponent.createRef<HTMLDivElement>();
@@ -275,6 +316,12 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private latestRawSample?: RawStateSample;
     private confirmedState?: RawStateSample;
     private lastPublishedSignature?: string;
+    private lastConfirmedAtMs?: number;
+    private lastPostResult = "pending";
+    private lastPostReason = "";
+    private duplicateSuppressedCount = 0;
+    private postFailureCount = 0;
+    private readonly clientDebugEvents: ClientDebugEntry[] = [];
 
     private cargoStations: PayloadStation[] = [];
     private baggageStations: PayloadStation[] = [];
@@ -431,6 +478,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.gameStateSub = GameStateTracker.instance.sub((reading: GameStateReading) => {
             this.captureGameStateReading(reading, reading.source === "event" ? "tracker_event" : "tracker_update");
         });
+        this.pushClientDebugEvent("tracker", "init_game_state_tracking");
 
         if (!GameStateTracker.instance.getCurrentReading()) {
             this.updateGameModeDebug("GameMode: (warming)");
@@ -696,6 +744,9 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private queuePushEfbState(reason: string, allowDuplicate = false): void {
         if (!this.confirmedState) {
             this.updatePostDebug("EFB POST: waiting for confirmed state");
+            this.lastPostResult = "waiting_confirmed_state";
+            this.lastPostReason = reason;
+            this.pushClientDebugEvent("post", reason, undefined, { note: "waiting_confirmed_state" });
             return;
         }
         if (
@@ -703,10 +754,17 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             && !this.pendingRepostReason
             && this.confirmedState.signature === this.lastPublishedSignature
         ) {
+            this.duplicateSuppressedCount += 1;
+            this.lastPostResult = "duplicate_suppressed";
+            this.lastPostReason = reason;
+            this.pushClientDebugEvent("post", reason, this.confirmedState, { note: "duplicate_suppressed" });
             this.updatePostDebug(`EFB POST: suppressed duplicate confirmed state (${reason})`);
             return;
         }
         this.pushQueued = true;
+        this.lastPostResult = "queued";
+        this.lastPostReason = reason;
+        this.pushClientDebugEvent("post", reason, this.confirmedState, { note: allowDuplicate ? "allow_duplicate" : "queue" });
         if (this.pendingRepostReason && reason !== this.pendingRepostReason) {
             this.updatePostDebug(`EFB POST: confirmed state ready (${reason}; repost pending: ${this.pendingRepostReason})`);
         } else {
@@ -727,6 +785,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.pushInFlight = true;
         this.efbStateSeq += 1;
         const seq = this.efbStateSeq;
+        const postReason = this.lastPostReason || this.pendingRepostReason || "confirmed_state";
         const sourceTsMs = Date.now();
         const state = this.confirmedState;
         const stabilityMs = Math.max(0, sourceTsMs - state.firstSeenAtMs);
@@ -736,6 +795,13 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             state.gameModeTrusted,
             state.isInMenuTrusted,
         );
+        this.lastPostResult = "posting";
+        this.lastPostReason = postReason;
+        this.pushClientDebugEvent("post", postReason, state, {
+            seq,
+            canonical_ui_state: canonicalUiState,
+            note: "attempt",
+        });
         try {
             const response = await fetch("http://127.0.0.1:5000/efb-state", {
                 method: "POST",
@@ -754,7 +820,8 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                     source_ts_ms: sourceTsMs,
                     capture_source: state.source,
                     stability_ms: stabilityMs,
-                    confirmed: true
+                    confirmed: true,
+                    client_debug: this.buildClientDebugPayload(),
                 })
             });
             const result = await response.json().catch(() => ({} as EfbStateResponse));
@@ -764,6 +831,13 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             if (result.accepted === false) {
                 const reason = result.reason || "server_rejected";
                 this.pendingRepostReason = reason;
+                this.lastPostResult = "rejected";
+                this.lastPostReason = reason;
+                this.pushClientDebugEvent("post", reason, state, {
+                    seq,
+                    canonical_ui_state: canonicalUiState,
+                    note: "server_rejected",
+                });
                 this.updatePostDebug(
                     `EFB POST: REJECTED seq=${seq} reason=${reason} `
                     + `active_session=${result.active_session_id || "-"} active_seq=${result.active_seq ?? "-"}`
@@ -773,6 +847,13 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             this.lastPostedSeq = seq;
             this.lastPostedAtMs = sourceTsMs;
             this.lastPublishedSignature = state.signature;
+            this.lastPostResult = "posted";
+            this.lastPostReason = result.reason || "accepted";
+            this.pushClientDebugEvent("post", this.lastPostReason, state, {
+                seq,
+                canonical_ui_state: result.canonical_ui_state || canonicalUiState,
+                note: "posted",
+            });
             const repostInfo = this.pendingRepostReason ? `; ${this.pendingRepostReason}` : "";
             this.pendingRepostReason = undefined;
             this.updatePostDebug(
@@ -784,6 +865,14 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         } catch {
             this.pendingRepostReason = this.pendingRepostReason ?? "retry after failure";
             this.pushQueued = true;
+            this.postFailureCount += 1;
+            this.lastPostResult = "failed";
+            this.lastPostReason = this.pendingRepostReason;
+            this.pushClientDebugEvent("post", this.lastPostReason, state, {
+                seq,
+                canonical_ui_state: canonicalUiState,
+                note: "failed",
+            });
             this.updatePostDebug("EFB POST: FAILED");
         } finally {
             this.pushInFlight = false;
@@ -994,6 +1083,14 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             signature: `${reading.gameMode}|${reading.isInMenu}|${reading.gameModeTrusted}|${reading.isInMenuTrusted}`
         };
         this.recordRawState(snapshot);
+        this.pushClientDebugEvent("reading", reason, snapshot, {
+            canonical_ui_state: this.deriveCanonicalUiState(
+                snapshot.gameMode,
+                snapshot.isInMenu,
+                snapshot.gameModeTrusted,
+                snapshot.isInMenuTrusted,
+            ),
+        });
         this.updateGameModeDebug(
             `GameMode: ${snapshot.gameMode} ${snapshot.label || "(empty)"} `
             + `| source=${snapshot.source} | trusted=${snapshot.gameModeTrusted}`
@@ -1043,6 +1140,16 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             ...sample,
             lastSeenAtMs: nowMs
         };
+        this.lastConfirmedAtMs = nowMs;
+        this.pushClientDebugEvent("confirm", reason, this.confirmedState, {
+            canonical_ui_state: this.deriveCanonicalUiState(
+                sample.gameMode,
+                sample.isInMenu,
+                sample.gameModeTrusted,
+                sample.isInMenuTrusted,
+            ),
+            note: `stability_ms=${stabilityMs}`,
+        });
         this.updateIsInMenuDebug(
             `IsInMenu: ${sample.isInMenu} | confirmed | stability=${stabilityMs}ms | last_seq=${this.lastPostedSeq ?? "-"}`
         );
@@ -1080,6 +1187,69 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             return "PAUSED";
         }
         return "UNKNOWN";
+    }
+
+    private buildClientDebugPayload(): ClientDebugPayload {
+        const nowMs = Date.now();
+        const confirmedState = this.confirmedState;
+        const confirmedCanonical = confirmedState
+            ? this.deriveCanonicalUiState(
+                confirmedState.gameMode,
+                confirmedState.isInMenu,
+                confirmedState.gameModeTrusted,
+                confirmedState.isInMenuTrusted,
+            )
+            : undefined;
+        return {
+            tracker: GameStateTracker.instance.getDebugSnapshot(),
+            pipeline: {
+                client_session_id: this.clientSessionId,
+                client_started_at_ms: this.clientStartedAtMs,
+                latest_raw_signature: this.latestRawSample?.signature,
+                latest_raw_source: this.latestRawSample?.source,
+                latest_raw_age_ms: this.latestRawSample ? Math.max(0, nowMs - this.latestRawSample.lastSeenAtMs) : undefined,
+                confirmed_signature: confirmedState?.signature,
+                confirmed_at_ms: this.lastConfirmedAtMs,
+                confirmed_age_ms: confirmedState ? Math.max(0, nowMs - confirmedState.lastSeenAtMs) : undefined,
+                confirmed_canonical_ui_state: confirmedCanonical,
+                last_post_seq: this.lastPostedSeq,
+                last_post_at_ms: this.lastPostedAtMs,
+                last_post_result: this.lastPostResult,
+                last_post_reason: this.lastPostReason,
+                pending_repost_reason: this.pendingRepostReason,
+                push_queued: this.pushQueued,
+                push_in_flight: this.pushInFlight,
+                duplicate_suppressed_count: this.duplicateSuppressedCount,
+                post_failure_count: this.postFailureCount,
+            },
+            recent_events: [...this.clientDebugEvents],
+        };
+    }
+
+    private pushClientDebugEvent(
+        stage: string,
+        reason: string,
+        sample?: RawStateSample,
+        extra?: Partial<ClientDebugEntry>,
+    ): void {
+        const event: ClientDebugEntry = {
+            ts_ms: Date.now(),
+            stage,
+            reason,
+            signature: sample?.signature,
+            game_mode: sample?.gameMode,
+            is_in_menu: sample?.isInMenu,
+            game_mode_trusted: sample?.gameModeTrusted,
+            is_in_menu_trusted: sample?.isInMenuTrusted,
+            source: sample?.source,
+            canonical_ui_state: extra?.canonical_ui_state,
+            seq: extra?.seq,
+            note: extra?.note,
+        };
+        this.clientDebugEvents.push(event);
+        if (this.clientDebugEvents.length > AddonStatus.DEBUG_HISTORY_LIMIT) {
+            this.clientDebugEvents.shift();
+        }
     }
 
     private handleMissionPayloadSignal(signal: StatusData["mission_payload_signal"]): void {
