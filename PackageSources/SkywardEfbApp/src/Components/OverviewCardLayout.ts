@@ -27,11 +27,12 @@ export function syncOverviewCardLayout(root: ParentNode): void {
             : card.clientWidth;
 
         const parentWidth = card.parentElement?.clientWidth ?? card.clientWidth;
-        const size = Math.max(140, Math.min(parentWidth, availableHeight, 280));
-        if (size > 0) {
-            const rounded = Math.round(size);
-            card.style.width = `${rounded}px`;
-            card.style.height = `${rounded}px`;
+        const desiredHeight = Math.min(parentWidth / 2.5, 360);
+        const minimumHeight = Math.min(160, availableHeight);
+        const height = Math.max(minimumHeight, Math.min(desiredHeight, availableHeight));
+        if (parentWidth > 0 && height > 0) {
+            card.style.width = `${Math.round(parentWidth)}px`;
+            card.style.height = `${Math.round(height)}px`;
         }
     }
 

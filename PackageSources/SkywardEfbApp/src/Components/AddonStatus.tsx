@@ -1,5 +1,5 @@
 import { GamepadUiView, RequiredProps, TVNode, UiViewProps } from "@efb/efb-api";
-import { FSComponent, NodeReference } from "@microsoft/msfs-sdk";
+import { AdcEvents, AhrsEvents, FSComponent, GNSSEvents, NodeReference, Subscription } from "@microsoft/msfs-sdk";
 import { buildOverviewViewModel, OverviewViewModel } from "./AddonStatusOverview";
 import { GameStateReading, GameStateTracker, GameStateTrackerDebugSnapshot } from "../GameStateTracker";
 import { syncOverviewCardLayout } from "./OverviewCardLayout";
@@ -286,6 +286,12 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private isInMenuDebug = FSComponent.createRef<HTMLDivElement>();
     private postDebug = FSComponent.createRef<HTMLDivElement>();
     private connectionDebug = FSComponent.createRef<HTMLDivElement>();
+    private positionLatLonDebug = FSComponent.createRef<HTMLDivElement>();
+    private positionHeadingDebug = FSComponent.createRef<HTMLDivElement>();
+    private positionTrackDebug = FSComponent.createRef<HTMLDivElement>();
+    private positionGroundSpeedDebug = FSComponent.createRef<HTMLDivElement>();
+    private positionOnGroundDebug = FSComponent.createRef<HTMLDivElement>();
+    private positionMagVarDebug = FSComponent.createRef<HTMLDivElement>();
 
     private statusTimer?: number;
     private refreshTimer?: number;
@@ -361,6 +367,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private lastMassBalanceStreamSignature = "";
     private lastMassBalancePostedAtMs?: number;
     private activeSection: ActiveSection = "overview";
+    private readonly positionVariableSubscriptions: Subscription[] = [];
 
     public onAfterRender(): void {
         if (this.gamepadUiViewRef.instance) {
@@ -378,6 +385,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         this.initAircraftInfoListener();
         this.initFlightPerformanceListener();
         this.initGameStateTracking();
+        this.initPositionVariableDebug();
 
         this.statusTimer = window.setInterval(() => this.fetchStatus(), 3000);
         this.refreshTimer = window.setInterval(() => this.refreshMassAndBalanceData(), 2000);
@@ -410,6 +418,9 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }
         if (this.gameStateSub) {
             this.gameStateSub.destroy();
+        }
+        for (const subscription of this.positionVariableSubscriptions) {
+            subscription.destroy();
         }
         if (this.aircraftLoadedSub) {
             this.aircraftLoadedSub.destroy();
@@ -487,6 +498,45 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             this.updateIsInMenuDebug("IsInMenu: (warming)");
         }
         this.updatePostDebug("EFB POST: warming up state capture");
+    }
+
+    private initPositionVariableDebug(): void {
+        this.updatePositionVariableLine(this.positionLatLonDebug, "Lat/Lon", "waiting for GNSSPublisher");
+        this.updatePositionVariableLine(this.positionHeadingDebug, "Heading True", "waiting for AhrsPublisher");
+        this.updatePositionVariableLine(this.positionTrackDebug, "Track True", "waiting for GNSSPublisher");
+        this.updatePositionVariableLine(this.positionGroundSpeedDebug, "Ground Speed", "waiting for GNSSPublisher");
+        this.updatePositionVariableLine(this.positionOnGroundDebug, "On Ground", "waiting for AdcPublisher");
+        this.updatePositionVariableLine(this.positionMagVarDebug, "MagVar", "waiting for GNSSPublisher");
+
+        const subscriber = this.props.appViewService.bus.getSubscriber<GNSSEvents & AhrsEvents & AdcEvents>();
+        this.positionVariableSubscriptions.push(
+            subscriber.on("gps-position").handle(position => {
+                const lat = Number.isFinite(position.lat) ? position.lat.toFixed(6) : "n/a";
+                const lon = Number.isFinite(position.long) ? position.long.toFixed(6) : "n/a";
+                this.updatePositionVariableLine(this.positionLatLonDebug, "Lat/Lon", `${lat}, ${lon}`);
+            }),
+            subscriber.on("actual_hdg_deg_true").withPrecision(1).handle(heading => {
+                this.updatePositionVariableLine(this.positionHeadingDebug, "Heading True", `${heading.toFixed(1)} deg`);
+            }),
+            subscriber.on("track_deg_true").withPrecision(1).handle(track => {
+                this.updatePositionVariableLine(this.positionTrackDebug, "Track True", `${track.toFixed(1)} deg`);
+            }),
+            subscriber.on("ground_speed").withPrecision(1).handle(speed => {
+                this.updatePositionVariableLine(this.positionGroundSpeedDebug, "Ground Speed", `${speed.toFixed(1)} kt`);
+            }),
+            subscriber.on("on_ground").handle(isOnGround => {
+                this.updatePositionVariableLine(this.positionOnGroundDebug, "On Ground", isOnGround ? "true" : "false");
+            }),
+            subscriber.on("magvar").withPrecision(1).handle(magVar => {
+                this.updatePositionVariableLine(this.positionMagVarDebug, "MagVar", `${magVar.toFixed(1)} deg`);
+            }),
+        );
+    }
+
+    private updatePositionVariableLine(ref: NodeReference<HTMLDivElement>, label: string, value: string): void {
+        if (ref.instance) {
+            ref.instance.textContent = `${label}: ${value}`;
+        }
     }
 
     private updateGameModeDebug(text: string): void {
@@ -2581,6 +2631,16 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                 <div ref={this.isInMenuDebug} class="skyward-debug-line skyward-debug-line--warning">{this.menuStatusText}</div>
                 <div ref={this.postDebug} class="skyward-debug-line skyward-debug-line--danger">{this.postStatusText}</div>
                 <div ref={this.connectionDebug} class="skyward-debug-line skyward-debug-line--info">{this.connectionStatusText}</div>
+
+                <div class="skyward-subsection">
+                    <div class="skyward-subsection__title">Position Variables</div>
+                    <div ref={this.positionLatLonDebug} class="skyward-info-line" />
+                    <div ref={this.positionHeadingDebug} class="skyward-info-line" />
+                    <div ref={this.positionTrackDebug} class="skyward-info-line" />
+                    <div ref={this.positionGroundSpeedDebug} class="skyward-info-line" />
+                    <div ref={this.positionOnGroundDebug} class="skyward-info-line" />
+                    <div ref={this.positionMagVarDebug} class="skyward-info-line" />
+                </div>
             </section>
         );
     }

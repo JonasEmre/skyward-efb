@@ -11,6 +11,7 @@ import {
 } from "@efb/efb-api";
 import { FSComponent, VNode } from "@microsoft/msfs-sdk";
 import { AddonStatus } from "./Components/AddonStatus";
+import { EfbFlightDataBackplane } from "./EfbFlightDataBackplane";
 import { GameStateTracker } from "./GameStateTracker";
 
 import "./SkywardEfbApp.scss";
@@ -76,6 +77,11 @@ class SkywardEfbAppView extends AppView<RequiredProps<AppViewProps, "bus">> {
     //
   }
 
+  public onUpdate(time: number): void {
+    EfbFlightDataBackplane.instance.update();
+    super.onUpdate(time);
+  }
+
   /**
    * Optional method
    * Default behavior is rendering AppContainer which works with AppViewService
@@ -137,6 +143,7 @@ class SkywardEfbApp extends App {
   public async install(_props: AppInstallProps): Promise<void> {
     Efb.loadCss(`${BASE_URL}/SkywardEfbApp.css`);
     GameStateTracker.instance.initialize(this.bus);
+    EfbFlightDataBackplane.instance.initialize(this.bus);
     return Promise.resolve();
   }
 

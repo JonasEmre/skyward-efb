@@ -276,8 +276,8 @@
 }
 
 .skyward-overview-map-card {
-  justify-self: center;
-  width: clamp(140px, calc(var(--skyward-panel-height) * 0.24), 280px);
+  justify-self: stretch;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   background:
@@ -323,7 +323,13 @@
   position: relative;
   width: 100%;
   height: 100%;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: grab;
+  user-select: none;
+}
+
+.skyward-overview-map--dragging {
+  cursor: grabbing;
 }
 
 .skyward-overview-map__bing {
@@ -331,6 +337,7 @@
   height: 100%;
   display: block;
   object-fit: cover;
+  pointer-events: none;
 }
 
 .skyward-overview-map__aircraft {
@@ -346,18 +353,49 @@
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.85));
 }
 
-.skyward-overview-map__status {
+.skyward-overview-map__controls {
   position: absolute;
-  inset: auto 8px 8px 8px;
+  inset: 12px 12px auto auto;
   z-index: 3;
-  font-size: 10px;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.skyward-overview-map__control-button {
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 999px;
+  background: rgba(8, 17, 29, 0.82);
+  color: rgba(248, 250, 252, 0.96);
+  padding: 8px 12px;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 1.3;
-  color: rgba(255, 255, 255, 0.9);
+  line-height: 1;
+  pointer-events: auto;
+}
+
+.skyward-overview-map__control-button--hidden {
+  display: none;
+}
+
+.skyward-overview-map__hint {
+  position: absolute;
+  inset: auto auto 10px 10px;
+  z-index: 3;
+  max-width: calc(100% - 20px);
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(8, 17, 29, 0.72);
+  backdrop-filter: blur(10px);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.92);
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.92);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 .skyward-image-card__media {
