@@ -346,31 +346,6 @@
   pointer-events: none;
 }
 
-.skyward-overview-map__controls {
-  position: absolute;
-  inset: 12px 12px auto auto;
-  z-index: 3;
-  display: flex;
-  justify-content: flex-end;
-  pointer-events: none;
-}
-
-.skyward-overview-map__control-button {
-  border: 1px solid rgba(148, 163, 184, 0.34);
-  border-radius: 999px;
-  background: rgba(8, 17, 29, 0.82);
-  color: rgba(248, 250, 252, 0.96);
-  padding: 8px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  pointer-events: auto;
-}
-
-.skyward-overview-map__control-button--hidden {
-  display: none;
-}
-
 .skyward-image-card__media {
   position: absolute;
   inset: 0;

@@ -8,6 +8,8 @@ import {
     GeoPoint,
     GNSSEvents,
     MapOwnAirplaneIconOrientation,
+    MapRotation,
+    MapTerrainColorsModule,
     MapSystemBuilder,
     MapSystemKeys,
     Subscription,
@@ -20,6 +22,11 @@ import {
 } from "@microsoft/msfs-sdk";
 
 declare const BASE_URL: string;
+declare const EBingReference: {
+    SEA: unknown;
+    AERIAL: unknown;
+    PLANE: unknown;
+};
 
 interface SkywardOverviewMapProps extends ComponentProps {
     bus: EventBus;
@@ -28,10 +35,9 @@ interface SkywardOverviewMapProps extends ComponentProps {
 export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps> {
     private static readonly DEFAULT_RANGE_NM = 25;
     private static readonly MIN_RANGE_NM = 2;
-    private static readonly MAX_RANGE_NM = 1200;
+    private static readonly MAX_RANGE_NM = 6000;
 
     private readonly rootRef = FSComponent.createRef<HTMLDivElement>();
-    private readonly followButtonRef = FSComponent.createRef<HTMLButtonElement>();
     private readonly projectedSize = Vec2Subject.create(Vec2Math.create(100, 100));
     private readonly deadZone = VecNSubject.create(VecNMath.create(4));
     private readonly aircraftPosition = new GeoPoint(0, 0);
@@ -43,6 +49,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
         .withProjectedSize(this.projectedSize)
         .withDeadZone(this.deadZone)
         .withRange(UnitType.NMILE.createNumber(SkywardOverviewMap.DEFAULT_RANGE_NM))
+        .withModule(MapSystemKeys.TerrainColors, () => new MapTerrainColorsModule())
         .withBing("skyward_overview_map")
         .withClockUpdate(30)
         .withFollowAirplane()
@@ -60,6 +67,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private updateRaf?: number;
     private isAwake = true;
     private isDragging = false;
+    private isFollowingAircraft = true;
     private lastDragX = 0;
     private lastDragY = 0;
     private mapRangeNm = SkywardOverviewMap.DEFAULT_RANGE_NM;
@@ -68,10 +76,6 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private readonly boundMouseDownHandler = this.onMapMouseDown.bind(this);
     private readonly boundMouseMoveHandler = this.onMapMouseMove.bind(this);
     private readonly boundMouseUpHandler = this.onMapMouseUp.bind(this);
-    private readonly boundFollowClickHandler = this.onFollowButtonClick.bind(this);
-    private readonly boundFollowMouseDownHandler = (evt: MouseEvent): void => {
-        evt.stopPropagation();
-    };
 
     public onAfterRender(): void {
         const root = this.rootRef.instance;
@@ -90,12 +94,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             root.onmouseleave = this.boundMouseUpHandler;
         }
 
-        const followButton = this.followButtonRef.getOrDefault();
-        if (followButton) {
-            followButton.onclick = this.boundFollowClickHandler;
-            followButton.onmousedown = this.boundFollowMouseDownHandler;
-        }
-
+        this.configureMapAppearance();
         this.bindPositionStreams();
         this.refreshLayout();
         this.pushRange();
@@ -103,8 +102,6 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
         if (!this.isAwake) {
             this.mapSystem.ref.instance.sleep();
         }
-
-        this.updateUi();
     }
 
     public setAwakeState(isAwake: boolean): void {
@@ -118,13 +115,11 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             mapInstance.wake();
             this.refreshLayout();
             this.startUpdateLoop();
-            this.updateUi();
             return;
         }
 
         this.stopUpdateLoop();
         mapInstance.sleep();
-        this.updateUi();
     }
 
     public refreshLayout(): void {
@@ -140,8 +135,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
 
     private bindPositionStreams(): void {
         const ownAirplaneModule = this.mapSystem.context.model.getModule(MapSystemKeys.OwnAirplaneProps);
-        const followModule = this.mapSystem.context.model.getModule(MapSystemKeys.FollowAirplane);
-        followModule.isFollowing.set(true);
+        this.setFollowState(true);
 
         const subscriber = this.props.bus.getSubscriber<GNSSEvents & AhrsEvents & AdcEvents>();
         this.subscriptions.push(
@@ -165,6 +159,26 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
                 ownAirplaneModule.magVar.set(magVar);
             }),
         );
+    }
+
+    private configureMapAppearance(): void {
+        const rotationModule = this.mapSystem.context.model.getModule(MapSystemKeys.Rotation);
+        rotationModule.rotationType.set(MapRotation.NorthUp);
+
+        try {
+            const terrainColorsModule = this.mapSystem.context.model.getModule(MapSystemKeys.TerrainColors);
+            (terrainColorsModule.reference as any).set(EBingReference.AERIAL);
+
+            terrainColorsModule.showIsoLines.set(false);
+        } catch {
+            // Leave the default Bing reference intact if terrain color controls are unavailable.
+        }
+    }
+
+    private setFollowState(isFollowingAircraft: boolean): void {
+        this.isFollowingAircraft = isFollowingAircraft;
+        const followModule = this.mapSystem.context.model.getModule(MapSystemKeys.FollowAirplane);
+        followModule.isFollowing.set(isFollowingAircraft);
     }
 
     private startUpdateLoop(): void {
@@ -192,17 +206,6 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
 
         window.cancelAnimationFrame(this.updateRaf);
         this.updateRaf = undefined;
-    }
-
-    private updateUi(): void {
-        const followModule = this.mapSystem.context.model.getModule(MapSystemKeys.FollowAirplane);
-        const followButton = this.followButtonRef.getOrDefault();
-        if (followButton) {
-            followButton.classList.toggle(
-                "skyward-overview-map__control-button--hidden",
-                followModule.isFollowing.get(),
-            );
-        }
     }
 
     private pushRange(): void {
@@ -253,9 +256,8 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
         this.lastDragX = evt.clientX;
         this.lastDragY = evt.clientY;
 
-        const followModule = this.mapSystem.context.model.getModule(MapSystemKeys.FollowAirplane);
-        if (followModule.isFollowing.get()) {
-            followModule.isFollowing.set(false);
+        if (this.isFollowingAircraft) {
+            this.setFollowState(false);
         }
 
         const projection = this.mapSystem.context.projection;
@@ -265,7 +267,6 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
         projection.set({ target: this.dragGeoPoint });
 
         this.rootRef.instance.classList.add("skyward-overview-map--dragging");
-        this.updateUi();
     }
 
     private onMapMouseUp(): void {
@@ -277,29 +278,10 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
         this.rootRef.instance.classList.remove("skyward-overview-map--dragging");
     }
 
-    private onFollowButtonClick(evt: MouseEvent): void {
-        evt.preventDefault();
-        evt.stopPropagation();
-
-        const followModule = this.mapSystem.context.model.getModule(MapSystemKeys.FollowAirplane);
-        followModule.isFollowing.set(true);
-        this.mapSystem.context.projection.set({ target: this.aircraftPosition });
-        this.updateUi();
-    }
-
     public render(): VNode {
         return (
             <div ref={this.rootRef} class="skyward-overview-map">
                 {this.mapSystem.map}
-                <div class="skyward-overview-map__controls">
-                    <button
-                        ref={this.followButtonRef}
-                        type="button"
-                        class="skyward-overview-map__control-button skyward-overview-map__control-button--hidden"
-                    >
-                        Follow Aircraft
-                    </button>
-                </div>
             </div>
         );
     }
@@ -318,12 +300,6 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             root.onmousemove = null;
             root.onmouseup = null;
             root.onmouseleave = null;
-        }
-
-        const followButton = this.followButtonRef.getOrDefault();
-        if (followButton) {
-            followButton.onclick = null;
-            followButton.onmousedown = null;
         }
 
         this.mapSystem.ref.getOrDefault()?.destroy();
