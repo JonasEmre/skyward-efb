@@ -4,6 +4,7 @@ import { buildOverviewViewModel, OverviewViewModel } from "./AddonStatusOverview
 import { GameStateReading, GameStateTracker, GameStateTrackerDebugSnapshot } from "../GameStateTracker";
 import { syncOverviewCardLayout } from "./OverviewCardLayout";
 import { PanelLayoutController } from "./PanelLayoutController";
+import { SkywardOverviewMap } from "./SkywardOverviewMap";
 
 declare const SimVar: {
     GetSimVarValue: (name: string, unit: string) => number;
@@ -253,6 +254,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private readonly airportText = FSComponent.createRef<HTMLDivElement>();
     private readonly overviewGrid = FSComponent.createRef<HTMLDivElement>();
     private readonly enRouteCard = FSComponent.createRef<HTMLDivElement>();
+    private readonly overviewMap = FSComponent.createRef<SkywardOverviewMap>();
     private readonly enRouteCardMedia = FSComponent.createRef<HTMLImageElement>();
     private readonly airportCard = FSComponent.createRef<HTMLDivElement>();
     private readonly aircraftCard = FSComponent.createRef<HTMLDivElement>();
@@ -530,6 +532,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             if (this.gamepadUiViewRef.instance) {
                 syncOverviewCardLayout(this.gamepadUiViewRef.instance);
             }
+            this.overviewMap.instance?.refreshLayout();
         });
     }
 
@@ -576,6 +579,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             ref.instance.classList.toggle("skyward-sidebar__button--active", this.activeSection === section);
         }
 
+        this.overviewMap.instance?.setAwakeState(this.activeSection === "overview");
         this.scheduleOverviewLayoutSync();
     }
 
@@ -624,16 +628,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     }
 
     private updateOverview(model: OverviewViewModel): void {
-        if (this.overviewGrid.instance) {
-            this.overviewGrid.instance.classList.toggle("skyward-overview-grid--hidden", model.showEnRoute);
-        }
-        if (this.enRouteCard.instance) {
-            this.enRouteCard.instance.classList.toggle("skyward-overview-enroute--visible", model.showEnRoute);
-        }
-        if (this.enRouteCardMedia.instance) {
-            this.enRouteCardMedia.instance.src = model.enRouteImage;
-        }
-
         const cardMap = [
             [this.airportCardMedia, this.airportCardText, this.airportCardDetail, model.cards.airport],
             [this.aircraftCardMedia, this.aircraftCardText, this.aircraftCardDetail, model.cards.aircraft],
@@ -2554,10 +2548,12 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                     {this.renderOverviewCard("Payload", this.payloadCard, this.payloadCardMedia, this.payloadCardText, this.payloadCardDetail)}
                 </div>
 
-                <div ref={this.enRouteCard} class="skyward-image-card skyward-image-card--panoramic skyward-overview-enroute">
-                    <img ref={this.enRouteCardMedia} class="skyward-image-card__media" alt="" />
-                    <div class="skyward-image-card__overlay" />
-                    <div class="skyward-image-card__center-label">En Route</div>
+                <div ref={this.enRouteCard} class="skyward-overview-map-card">
+                    <SkywardOverviewMap ref={this.overviewMap} bus={this.props.appViewService.bus} />
+                    <div class="skyward-overview-map-card__header">
+                        <div class="skyward-overview-map-card__eyebrow">Map</div>
+                        <div class="skyward-overview-map-card__detail">Live aircraft position</div>
+                    </div>
                 </div>
 
                 <div class="skyward-meta-list">
