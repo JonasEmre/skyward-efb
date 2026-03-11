@@ -1,17 +1,29 @@
 import {
+    AirportFacility,
+    AirportClass,
     AdcEvents,
     AhrsEvents,
+    BitFlags,
+    AirportClassMask,
     ComponentProps,
     DisplayComponent,
     EventBus,
+    FacilityLoader,
+    FacilityRepository,
+    FacilityWaypoint,
     FSComponent,
     GeoPoint,
     GNSSEvents,
+    ICAO,
+    MapCullableLocationTextLabel,
     MapOwnAirplaneIconOrientation,
     MapRotation,
     MapTerrainColorsModule,
+    MapWaypointImageIcon,
     MapSystemBuilder,
     MapSystemKeys,
+    MapSystemWaypointRoles,
+    NearestAirportSearchSession,
     Subscription,
     UnitType,
     Vec2Math,
@@ -19,6 +31,7 @@ import {
     VecNMath,
     VecNSubject,
     VNode,
+    WaypointDisplayBuilder,
 } from "@microsoft/msfs-sdk";
 
 declare const BASE_URL: string;
@@ -32,10 +45,61 @@ interface SkywardOverviewMapProps extends ComponentProps {
     bus: EventBus;
 }
 
+class SkywardAirportWaypointBuilder {
+    private static readonly DEFAULT_ICON_SIZE_PX = 22;
+    private static readonly AIRPORT_ICON_URL =
+        "coui://html_ui/Pages/VCockpit/Instruments/Shared/Map/Icons/ICON_MAP_AIRPORT7.svg";
+
+    private readonly iconSize = Vec2Subject.create(
+        Vec2Math.create(
+            SkywardAirportWaypointBuilder.DEFAULT_ICON_SIZE_PX,
+            SkywardAirportWaypointBuilder.DEFAULT_ICON_SIZE_PX,
+        ),
+    );
+    private readonly airportIcon = new Image();
+
+    constructor() {
+        this.airportIcon.src = SkywardAirportWaypointBuilder.AIRPORT_ICON_URL;
+    }
+
+    public configure(builder: WaypointDisplayBuilder): void {
+        builder
+            .withSearchCenter("target")
+            .addDefaultIcon<FacilityWaypoint<AirportFacility>>(MapSystemWaypointRoles.Normal, waypoint => this.createAirportIcon(waypoint))
+            .addDefaultLabel<FacilityWaypoint<AirportFacility>>(MapSystemWaypointRoles.Normal, waypoint => this.createAirportLabel(waypoint));
+    }
+
+    private createAirportIcon(waypoint: FacilityWaypoint<AirportFacility>): MapWaypointImageIcon<FacilityWaypoint<AirportFacility>> {
+        return new MapWaypointImageIcon(waypoint, 1, this.airportIcon, this.iconSize);
+    }
+
+    private createAirportLabel(waypoint: FacilityWaypoint<AirportFacility>): MapCullableLocationTextLabel {
+        const facility = waypoint.facility.get();
+
+        return new MapCullableLocationTextLabel(
+            ICAO.getIdent(facility.icao),
+            1,
+            waypoint.location,
+            false,
+            {
+                anchor: new Float64Array([0.5, 2.05]),
+                font: "RobotoMono-Regular",
+                fontSize: 12,
+                fontColor: "white",
+                bgColor: "rgba(6, 12, 24, 0.82)",
+                bgPadding: new Float64Array([0, 3, 0, 3]),
+                showBg: false,
+            },
+        );
+    }
+}
+
 export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps> {
     private static readonly DEFAULT_RANGE_NM = 25;
     private static readonly MIN_RANGE_NM = 2;
     private static readonly MAX_RANGE_NM = 6000;
+    private static readonly MIN_AIRPORT_SEARCH_RANGE_NM = 50;
+    private static readonly MAX_AIRPORT_SEARCH_RANGE_NM = 750;
 
     private readonly rootRef = FSComponent.createRef<HTMLDivElement>();
     private readonly projectedSize = Vec2Subject.create(Vec2Math.create(100, 100));
@@ -44,17 +108,22 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private readonly dragVector = Vec2Math.create();
     private readonly dragGeoPoint = new GeoPoint(0, 0);
     private readonly subscriptions: Subscription[] = [];
+    private readonly facilityRepository = FacilityRepository.getRepository(this.props.bus);
+    private readonly facilityLoader = new FacilityLoader(this.facilityRepository);
+    private readonly airportWaypointBuilder = new SkywardAirportWaypointBuilder();
 
     private readonly mapSystem = MapSystemBuilder.create(this.props.bus)
         .withProjectedSize(this.projectedSize)
         .withDeadZone(this.deadZone)
         .withRange(UnitType.NMILE.createNumber(SkywardOverviewMap.DEFAULT_RANGE_NM))
         .withModule(MapSystemKeys.TerrainColors, () => new MapTerrainColorsModule())
+        .withContext(MapSystemKeys.FacilityLoader, () => this.facilityLoader)
         .withBing("skyward_overview_map")
         .withClockUpdate(30)
         .withFollowAirplane()
         .withRotation()
         .withOwnAirplanePropBindings(["position", "trackTrue", "groundSpeed", "isOnGround", "magVar"], 30)
+        .withNearestWaypoints(builder => this.airportWaypointBuilder.configure(builder))
         .withOwnAirplaneIcon(
             28,
             `${BASE_URL}/Assets/map-aircraft.svg`,
@@ -95,6 +164,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
         }
 
         this.configureMapAppearance();
+        this.configureAirportWaypointDisplay();
         this.bindPositionStreams();
         this.refreshLayout();
         this.pushRange();
@@ -175,6 +245,70 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
         }
     }
 
+    private configureAirportWaypointDisplay(): void {
+        const waypointDisplayModule = this.mapSystem.context.model.getModule(MapSystemKeys.NearestWaypoints);
+
+        waypointDisplayModule.showAirports.set(() => true);
+        waypointDisplayModule.showIntersections.set(() => false);
+        waypointDisplayModule.showNdbs.set(() => false);
+        waypointDisplayModule.showVors.set(() => false);
+        waypointDisplayModule.airportsFilter.set({
+            classMask: BitFlags.union(
+                AirportClassMask.HardSurface,
+                AirportClassMask.SoftSurface,
+                AirportClassMask.AllWater,
+                AirportClassMask.HeliportOnly,
+                AirportClassMask.Private,
+            ),
+            showClosed: NearestAirportSearchSession.Defaults.ShowClosed,
+        });
+        waypointDisplayModule.extendedAirportsFilter.set({
+            approachTypeMask: NearestAirportSearchSession.Defaults.ApproachTypeMask,
+            runwaySurfaceTypeMask: NearestAirportSearchSession.Defaults.SurfaceTypeMask,
+            minimumRunwayLength: 0,
+            toweredMask: NearestAirportSearchSession.Defaults.ToweredMask,
+        });
+
+        this.syncAirportDisplaySettings();
+    }
+
+    private syncAirportDisplaySettings(): void {
+        const waypointDisplayModule = this.mapSystem.context.model.getModule(MapSystemKeys.NearestWaypoints);
+        const searchRangeNm = this.getAirportSearchRangeNm();
+
+        let airportLimit = 24;
+        if (this.mapRangeNm > 150) {
+            airportLimit = 80;
+        } else if (this.mapRangeNm > 50) {
+            airportLimit = 60;
+        } else if (this.mapRangeNm > 15) {
+            airportLimit = 40;
+        }
+
+        waypointDisplayModule.numAirports.set(airportLimit);
+        waypointDisplayModule.airportsRange.set(searchRangeNm, UnitType.NMILE);
+    }
+
+    private getAirportSearchRangeNm(): number {
+        return Math.min(
+            SkywardOverviewMap.MAX_AIRPORT_SEARCH_RANGE_NM,
+            Math.max(SkywardOverviewMap.MIN_AIRPORT_SEARCH_RANGE_NM, this.mapRangeNm * 3),
+        );
+    }
+
+    private getAirportSearchLimit(): number {
+        if (this.mapRangeNm > 150) {
+            return 80;
+        }
+        if (this.mapRangeNm > 50) {
+            return 60;
+        }
+        if (this.mapRangeNm > 15) {
+            return 40;
+        }
+        return 24;
+    }
+
     private setFollowState(isFollowingAircraft: boolean): void {
         this.isFollowingAircraft = isFollowingAircraft;
         const followModule = this.mapSystem.context.model.getModule(MapSystemKeys.FollowAirplane);
@@ -223,6 +357,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             Math.max(SkywardOverviewMap.MIN_RANGE_NM, nextRange),
         );
         this.pushRange();
+        this.syncAirportDisplaySettings();
     }
 
     private onMapMouseDown(evt: MouseEvent): void {
