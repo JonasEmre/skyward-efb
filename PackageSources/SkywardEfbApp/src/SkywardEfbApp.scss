@@ -346,6 +346,34 @@
   pointer-events: none;
 }
 
+.skyward-overview-map__controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 4;
+  pointer-events: auto;
+}
+
+.skyward-overview-map__debug-button {
+  min-width: 88px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(6, 12, 24, 0.88);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.skyward-overview-map__debug-button:disabled {
+  opacity: 0.58;
+  cursor: default;
+}
+
 .skyward-image-card__media {
   position: absolute;
   inset: 0;

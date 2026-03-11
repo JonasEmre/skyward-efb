@@ -33,6 +33,7 @@ import {
     VNode,
     WaypointDisplayBuilder,
 } from "@microsoft/msfs-sdk";
+import { MsfsAirportDbPullDebug } from "../Debug/db_pull";
 
 declare const BASE_URL: string;
 declare const EBingReference: {
@@ -102,6 +103,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private static readonly MAX_AIRPORT_SEARCH_RANGE_NM = 750;
 
     private readonly rootRef = FSComponent.createRef<HTMLDivElement>();
+    private readonly debugPullButtonRef = FSComponent.createRef<HTMLButtonElement>();
     private readonly projectedSize = Vec2Subject.create(Vec2Math.create(100, 100));
     private readonly deadZone = VecNSubject.create(VecNMath.create(4));
     private readonly aircraftPosition = new GeoPoint(0, 0);
@@ -111,6 +113,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private readonly facilityRepository = FacilityRepository.getRepository(this.props.bus);
     private readonly facilityLoader = new FacilityLoader(this.facilityRepository);
     private readonly airportWaypointBuilder = new SkywardAirportWaypointBuilder();
+    private readonly debugDbPull = new MsfsAirportDbPullDebug(this.facilityLoader);
 
     private readonly mapSystem = MapSystemBuilder.create(this.props.bus)
         .withProjectedSize(this.projectedSize)
@@ -137,6 +140,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private isAwake = true;
     private isDragging = false;
     private isFollowingAircraft = true;
+    private hasValidGpsPosition = false;
     private lastDragX = 0;
     private lastDragY = 0;
     private mapRangeNm = SkywardOverviewMap.DEFAULT_RANGE_NM;
@@ -145,6 +149,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private readonly boundMouseDownHandler = this.onMapMouseDown.bind(this);
     private readonly boundMouseMoveHandler = this.onMapMouseMove.bind(this);
     private readonly boundMouseUpHandler = this.onMapMouseUp.bind(this);
+    private readonly boundDebugPullClickHandler = this.onDebugPullButtonPressed.bind(this);
 
     public onAfterRender(): void {
         const root = this.rootRef.instance;
@@ -162,11 +167,15 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             root.onmouseup = this.boundMouseUpHandler;
             root.onmouseleave = this.boundMouseUpHandler;
         }
+        if (this.debugPullButtonRef.instance) {
+            this.debugPullButtonRef.instance.onclick = this.boundDebugPullClickHandler;
+        }
 
         this.configureMapAppearance();
         this.configureAirportWaypointDisplay();
         this.bindPositionStreams();
         this.refreshLayout();
+        this.refreshDebugPullButton();
         this.pushRange();
         this.startUpdateLoop();
         if (!this.isAwake) {
@@ -212,6 +221,11 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             subscriber.on("gps-position").handle(position => {
                 this.aircraftPosition.set(position.lat, position.long);
                 ownAirplaneModule.position.set(position.lat, position.long);
+                this.debugDbPull.notifyGpsPosition(position.lat, position.long);
+                if (!this.hasValidGpsPosition) {
+                    this.hasValidGpsPosition = true;
+                    this.refreshDebugPullButton();
+                }
             }),
             subscriber.on("actual_hdg_deg_true").withPrecision(1).handle(heading => {
                 ownAirplaneModule.hdgTrue.set(heading);
@@ -413,10 +427,51 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
         this.rootRef.instance.classList.remove("skyward-overview-map--dragging");
     }
 
+    private onDebugPullButtonPressed(): void {
+        const result = this.debugDbPull.startManualExport();
+        const button = this.debugPullButtonRef.getOrDefault();
+        if (!button) {
+            return;
+        }
+
+        if (result === "waiting_gps") {
+            button.textContent = "Waiting GPS";
+            return;
+        }
+        if (result === "busy") {
+            button.textContent = "Pulling...";
+            button.disabled = true;
+            return;
+        }
+
+        button.textContent = "Pulling...";
+        button.disabled = true;
+    }
+
+    private refreshDebugPullButton(): void {
+        const button = this.debugPullButtonRef.getOrDefault();
+        if (!button) {
+            return;
+        }
+
+        button.disabled = !this.hasValidGpsPosition;
+        button.textContent = this.hasValidGpsPosition ? "DB Pull" : "Waiting GPS";
+    }
+
     public render(): VNode {
         return (
             <div ref={this.rootRef} class="skyward-overview-map">
                 {this.mapSystem.map}
+                <div class="skyward-overview-map__controls">
+                    <button
+                        ref={this.debugPullButtonRef}
+                        class="skyward-overview-map__debug-button"
+                        type="button"
+                        disabled
+                    >
+                        Waiting GPS
+                    </button>
+                </div>
             </div>
         );
     }
@@ -436,7 +491,11 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             root.onmouseup = null;
             root.onmouseleave = null;
         }
+        if (this.debugPullButtonRef.instance) {
+            this.debugPullButtonRef.instance.onclick = null;
+        }
 
+        this.debugDbPull.destroy();
         this.mapSystem.ref.getOrDefault()?.destroy();
         super.destroy();
     }
