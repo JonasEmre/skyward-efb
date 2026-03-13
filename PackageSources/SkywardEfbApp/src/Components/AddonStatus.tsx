@@ -1,5 +1,19 @@
-import { GamepadUiView, RequiredProps, TVNode, UiViewProps } from "@efb/efb-api";
-import { AdcEvents, AhrsEvents, FSComponent, GNSSEvents, NodeReference, Subscription } from "@microsoft/msfs-sdk";
+import {
+    Button,
+    GamepadUiView,
+    RequiredProps,
+    TVNode,
+    UiViewProps,
+} from "@efb/efb-api";
+import {
+    AdcEvents,
+    AhrsEvents,
+    FSComponent,
+    GNSSEvents,
+    NodeReference,
+    Subject,
+    Subscription,
+} from "@microsoft/msfs-sdk";
 import { buildOverviewViewModel, OverviewViewModel } from "./AddonStatusOverview";
 import { GameStateReading, GameStateTracker, GameStateTrackerDebugSnapshot } from "../GameStateTracker";
 import { syncOverviewCardLayout } from "./OverviewCardLayout";
@@ -151,6 +165,7 @@ interface ClientDebugPayload {
 }
 
 type PayloadStationKind = "pax" | "cargo" | "baggage" | "unknown";
+type StationVisualRole = "pilot" | "copilot" | "passenger" | "cargo" | "baggage";
 
 interface PayloadStation {
     id: number;
@@ -233,7 +248,6 @@ interface AircraftExportPayload {
 }
 
 type ActiveSection = "overview" | "simconnect" | "payload";
-
 export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps> {
     public readonly tabName = AddonStatus.name;
     private static readonly STATE_CONFIRM_MS = 250;
@@ -245,12 +259,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private readonly overviewSection = FSComponent.createRef<HTMLDivElement>();
     private readonly simconnectSection = FSComponent.createRef<HTMLDivElement>();
     private readonly payloadSection = FSComponent.createRef<HTMLDivElement>();
-    private readonly overviewNavButton = FSComponent.createRef<HTMLButtonElement>();
-    private readonly simconnectNavButton = FSComponent.createRef<HTMLButtonElement>();
-    private readonly payloadNavButton = FSComponent.createRef<HTMLButtonElement>();
-    private readonly loadCargoPresetButton = FSComponent.createRef<HTMLButtonElement>();
-    private readonly sendPlanButton = FSComponent.createRef<HTMLButtonElement>();
-    private readonly exportAircraftButton = FSComponent.createRef<HTMLButtonElement>();
     private readonly airportText = FSComponent.createRef<HTMLDivElement>();
     private readonly overviewGrid = FSComponent.createRef<HTMLDivElement>();
     private readonly enRouteCard = FSComponent.createRef<HTMLDivElement>();
@@ -275,6 +283,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
     private statusText = FSComponent.createRef<HTMLDivElement>();
     private aircraftText = FSComponent.createRef<HTMLDivElement>();
+    private crewEditors = FSComponent.createRef<HTMLDivElement>();
     private cargoEditors = FSComponent.createRef<HTMLDivElement>();
     private baggageEditors = FSComponent.createRef<HTMLDivElement>();
     private seatEditors = FSComponent.createRef<HTMLDivElement>();
@@ -368,6 +377,9 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private lastMassBalancePostedAtMs?: number;
     private activeSection: ActiveSection = "overview";
     private readonly positionVariableSubscriptions: Subscription[] = [];
+    private readonly overviewNavSelected = Subject.create(true);
+    private readonly simconnectNavSelected = Subject.create(false);
+    private readonly payloadNavSelected = Subject.create(false);
 
     public onAfterRender(): void {
         if (this.gamepadUiViewRef.instance) {
@@ -378,7 +390,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             this.panelLayoutController.start();
         }
         this.syncSectionVisibility();
-        this.bindStaticButtonHandlers();
         this.updateOverview(buildOverviewViewModel({}));
         this.fetchStatus();
         this.initMassBalanceListener();
@@ -586,33 +597,11 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         });
     }
 
-    private bindStaticButtonHandlers(): void {
-        const bindings: Array<[NodeReference<HTMLButtonElement>, () => void]> = [
-            [this.overviewNavButton, () => { this.setSection("overview"); }],
-            [this.simconnectNavButton, () => { this.setSection("simconnect"); }],
-            [this.payloadNavButton, () => { this.setSection("payload"); }],
-            [this.loadCargoPresetButton, () => { this.loadCargoPreset(); }],
-            [this.sendPlanButton, () => { this.sendPlannerConfigToAtcAndOpen(); }],
-            [this.exportAircraftButton, () => { this.exportAircraftJson(); }],
-        ];
-
-        for (const [ref, handler] of bindings) {
-            if (ref.instance) {
-                ref.instance.onclick = handler;
-            }
-        }
-    }
-
     private syncSectionVisibility(): void {
         const sectionEntries: Array<[ActiveSection, typeof this.overviewSection]> = [
             ["overview", this.overviewSection],
             ["simconnect", this.simconnectSection],
             ["payload", this.payloadSection],
-        ];
-        const buttonEntries: Array<[ActiveSection, typeof this.overviewNavButton]> = [
-            ["overview", this.overviewNavButton],
-            ["simconnect", this.simconnectNavButton],
-            ["payload", this.payloadNavButton],
         ];
 
         for (const [section, ref] of sectionEntries) {
@@ -621,16 +610,11 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             }
             ref.instance.classList.toggle("skyward-section--hidden", this.activeSection !== section);
         }
-
-        for (const [section, ref] of buttonEntries) {
-            if (!ref.instance) {
-                continue;
-            }
-            ref.instance.classList.toggle("skyward-sidebar__button--active", this.activeSection === section);
-        }
+        this.overviewNavSelected.set(this.activeSection === "overview");
+        this.simconnectNavSelected.set(this.activeSection === "simconnect");
+        this.payloadNavSelected.set(this.activeSection === "payload");
 
         this.overviewMap.instance?.setAwakeState(this.activeSection === "overview");
-        this.scheduleOverviewLayoutSync();
     }
 
     private setStatusTone(
@@ -1340,7 +1324,12 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         if (!this.massBalanceListener || !this.massBalanceReady) {
             return;
         }
-        if (!this.cargoEditors.instance || !this.seatEditors.instance) {
+        if (
+            !this.crewEditors.instance
+            || !this.cargoEditors.instance
+            || !this.baggageEditors.instance
+            || !this.seatEditors.instance
+        ) {
             return;
         }
 
@@ -1426,16 +1415,37 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             this.updateSeatSummary();
             this.updateMassSummary(cargoDecks, seatDecks, maxMassData, fuelTankData);
             if (!this.plannerIsEditing) {
-                this.renderPayloadPlanner();
+                try {
+                    this.renderPayloadPlanner();
+                } catch {
+                    this.setEmptyState(this.payloadPlanner.instance, "Payload planner is temporarily unavailable.");
+                }
             }
             this.tryApplyPendingMissionSignal();
 
+            try {
+                this.renderCrewEditors();
+            } catch {
+                this.setEmptyState(this.crewEditors.instance, "Crew payload cards could not be rendered.");
+            }
             if (this.editingCargoIds.size === 0) {
-                this.renderCargoEditors();
-                this.renderBaggageEditors();
+                try {
+                    this.renderCargoEditors();
+                } catch {
+                    this.setEmptyState(this.cargoEditors.instance, "Cargo stations could not be rendered.");
+                }
+                try {
+                    this.renderBaggageEditors();
+                } catch {
+                    this.setEmptyState(this.baggageEditors.instance, "Baggage stations could not be rendered.");
+                }
             }
             if (this.editingSeatKeys.size === 0) {
-                this.renderSeatEditors();
+                try {
+                    this.renderSeatEditors();
+                } catch {
+                    this.setEmptyState(this.seatEditors.instance, "Passenger stations could not be rendered.");
+                }
             }
         } catch {
             if (this.cargoResult.instance) {
@@ -1571,7 +1581,7 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
         const applyBtn = this.createActionButton(
             "Apply TO-safe",
-            (): void => { this.applyTakeoffSafePayload(Number(slider.value)); },
+            (): void => { void this.applyTakeoffSafePayload(Number(slider.value)); },
             "green",
         );
         applyBtn.classList.add("skyward-action-button--wide");
@@ -1597,8 +1607,9 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         slider.onblur = (): void => { this.plannerIsEditing = false; };
         pctInput.onfocus = (): void => { this.plannerIsEditing = true; };
         pctInput.onblur = (): void => { this.plannerIsEditing = false; };
-        slider.oninput = (): void => syncAndPreview(Number(slider.value));
-        pctInput.oninput = (): void => syncAndPreview(Number(pctInput.value));
+        slider.oninput = (): void => { syncAndPreview(Number(slider.value)); };
+        pctInput.oninput = (): void => { syncAndPreview(Number(pctInput.value)); };
+
         syncAndPreview(this.plannerPercent);
         container.appendChild(slider);
         container.appendChild(pctInput);
@@ -1834,6 +1845,117 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
             `Passenger-loadable seats: ${totalPassengerSeats} | Occupied pax: ${totalOccupiedPassengerSeats}`;
     }
 
+    private getSeatVisualRole(seat: SeatStation): StationVisualRole {
+        if (seat.isPilot) {
+            return "pilot";
+        }
+        if (seat.isCopilot) {
+            return "copilot";
+        }
+        return "passenger";
+    }
+
+    private getSeatRoleLabel(seat: SeatStation): string {
+        if (seat.isPilot) {
+            return "Pilot";
+        }
+        if (seat.isCopilot) {
+            return "Copilot";
+        }
+        return "Passenger";
+    }
+
+    private createStationCard(
+        role: StationVisualRole,
+        eyebrow: string,
+        title: string,
+        detailLines: string[],
+        controls?: HTMLElement[],
+    ): HTMLDivElement {
+        const card = document.createElement("div");
+        card.className = `skyward-station-card skyward-station-card--${role}`;
+
+        const header = document.createElement("div");
+        header.className = "skyward-station-card__header";
+
+        const eyebrowEl = document.createElement("div");
+        eyebrowEl.className = "skyward-station-card__eyebrow";
+        eyebrowEl.textContent = eyebrow;
+
+        const titleEl = document.createElement("div");
+        titleEl.className = "skyward-station-card__title";
+        titleEl.textContent = title;
+
+        header.appendChild(eyebrowEl);
+        header.appendChild(titleEl);
+        card.appendChild(header);
+
+        const detailList = document.createElement("div");
+        detailList.className = "skyward-station-card__details";
+
+        for (const line of detailLines) {
+            const detail = document.createElement("div");
+            detail.className = "skyward-station-card__detail";
+            detail.textContent = line;
+            detailList.appendChild(detail);
+        }
+
+        card.appendChild(detailList);
+
+        if (controls && controls.length > 0) {
+            const controlsEl = document.createElement("div");
+            controlsEl.className = "skyward-station-card__controls";
+            for (const control of controls) {
+                controlsEl.appendChild(control);
+            }
+            card.appendChild(controlsEl);
+        }
+
+        return card;
+    }
+
+    private renderCrewEditors(): void {
+        if (!this.crewEditors.instance) {
+            return;
+        }
+
+        this.crewEditors.instance.innerHTML = "";
+
+        const crewSeats = this.seatStations
+            .filter(seat => seat.isPilot || seat.isCopilot)
+            .sort((left, right) => {
+                if (left.isPilot !== right.isPilot) {
+                    return left.isPilot ? -1 : 1;
+                }
+                return left.sectionName.localeCompare(right.sectionName);
+            });
+
+        if (crewSeats.length === 0) {
+            this.setEmptyState(this.crewEditors.instance, "No crew payload stations defined.");
+            return;
+        }
+
+        for (const seat of crewSeats) {
+            const occupancyText = seat.currentOccupation > 0 || seat.currentMassLbs > 0 ? "Occupied" : "Empty";
+            const details = [
+                `Status: ${occupancyText}`,
+                `Seats: ${seat.maxOccupation}`,
+            ];
+            if (seat.currentMassLbs > 0) {
+                details.push(`Current load: ${seat.currentMassLbs.toFixed(1)} lbs`);
+            }
+
+            this.crewEditors.instance.appendChild(
+                this.createStationCard(
+                    this.getSeatVisualRole(seat),
+                    this.getSeatRoleLabel(seat),
+                    seat.sectionName,
+                    details,
+                ),
+            );
+        }
+    }
+
     private renderCargoEditors(): void {
         if (!this.cargoEditors.instance) {
             return;
@@ -1847,14 +1969,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }
 
         for (const station of this.cargoStations) {
-            const row = document.createElement("div");
-            row.className = "skyward-editor-row";
-
-            const info = document.createElement("div");
-            info.className = "skyward-editor-row__info";
-            info.textContent =
-                `Cargo ${station.id} (${station.name})  Current: ${station.massLbs.toFixed(1)} lbs  Max: ${station.maxLbs.toFixed(1)} lbs`;
-
             const input = document.createElement("input");
             input.type = "number";
             input.step = "1";
@@ -1871,14 +1985,22 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
             const button = this.createActionButton(
                 "Set",
-                (): void => { this.setSingleCargoStation(station, input.value); },
+                (): void => { void this.setSingleCargoStation(station, input.value); },
                 "blue",
             );
 
-            row.appendChild(info);
-            row.appendChild(input);
-            row.appendChild(button);
-            this.cargoEditors.instance.appendChild(row);
+            this.cargoEditors.instance.appendChild(
+                this.createStationCard(
+                    "cargo",
+                    `Cargo #${station.id}`,
+                    station.name,
+                    [
+                        `Current: ${station.massLbs.toFixed(1)} lbs`,
+                        `Max: ${station.maxLbs.toFixed(1)} lbs`,
+                    ],
+                    [input, button],
+                ),
+            );
         }
     }
 
@@ -1895,14 +2017,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }
 
         for (const station of this.baggageStations) {
-            const row = document.createElement("div");
-            row.className = "skyward-editor-row";
-
-            const info = document.createElement("div");
-            info.className = "skyward-editor-row__info";
-            info.textContent =
-                `Baggage ${station.id} (${station.name})  Current: ${station.massLbs.toFixed(1)} lbs  Max: ${station.maxLbs.toFixed(1)} lbs`;
-
             const input = document.createElement("input");
             input.type = "number";
             input.step = "1";
@@ -1919,14 +2033,22 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
             const button = this.createActionButton(
                 "Set",
-                (): void => { this.setSingleCargoStation(station, input.value); },
+                (): void => { void this.setSingleCargoStation(station, input.value); },
                 "teal",
             );
 
-            row.appendChild(info);
-            row.appendChild(input);
-            row.appendChild(button);
-            this.baggageEditors.instance.appendChild(row);
+            this.baggageEditors.instance.appendChild(
+                this.createStationCard(
+                    "baggage",
+                    `Baggage #${station.id}`,
+                    station.name,
+                    [
+                        `Current: ${station.massLbs.toFixed(1)} lbs`,
+                        `Max: ${station.maxLbs.toFixed(1)} lbs`,
+                    ],
+                    [input, button],
+                ),
+            );
         }
     }
 
@@ -1944,15 +2066,6 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
         }
 
         for (const seat of editableSeats) {
-            const row = document.createElement("div");
-            row.className = "skyward-editor-row";
-
-            const info = document.createElement("div");
-            info.className = "skyward-editor-row__info";
-            const seatRole = "Passenger seat";
-            info.textContent =
-                `${seat.sectionName} (${seatRole})  Current Pax: ${seat.currentOccupation}  Max Pax: ${seat.maxOccupation}`;
-
             const input = document.createElement("input");
             input.type = "number";
             input.step = "1";
@@ -1969,14 +2082,22 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
 
             const button = this.createActionButton(
                 "Set",
-                (): void => { this.setSingleSeatStation(seat, input.value); },
+                (): void => { void this.setSingleSeatStation(seat, input.value); },
                 "blue",
             );
 
-            row.appendChild(info);
-            row.appendChild(input);
-            row.appendChild(button);
-            this.seatEditors.instance.appendChild(row);
+            this.seatEditors.instance.appendChild(
+                this.createStationCard(
+                    "passenger",
+                    "Passenger",
+                    seat.sectionName,
+                    [
+                        `Current pax: ${seat.currentOccupation}`,
+                        `Capacity: ${seat.maxOccupation}`,
+                    ],
+                    [input, button],
+                ),
+            );
         }
     }
 
@@ -2553,17 +2674,28 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
     private renderSidebarButton(
         label: string,
         section: ActiveSection,
-        ref: NodeReference<HTMLButtonElement>,
+        selected: Subject<boolean>,
     ): TVNode<HTMLButtonElement> {
         return (
-            <button
-                ref={ref}
-                type="button"
+            <Button
                 class="skyward-sidebar__button"
-                data-section={section}
+                selected={selected}
+                callback={() => { this.setSection(section); }}
             >
-                {label}
-            </button>
+                <div class="skyward-button__label">{label}</div>
+            </Button>
+        );
+    }
+
+    private renderActionButton(
+        label: string,
+        className: string,
+        onClick: () => void,
+    ): TVNode<HTMLButtonElement> {
+        return (
+            <Button class={className} callback={() => { onClick(); }}>
+                <div class="skyward-button__label">{label}</div>
+            </Button>
         );
     }
 
@@ -2661,43 +2793,42 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                 </div>
 
                 <div class="skyward-subsection">
-                    <div class="skyward-subsection__title">Cargo stations (weight lbs, with max limit):</div>
-                    <div ref={this.cargoEditors} class="skyward-editor-list" />
+                    <div class="skyward-subsection__title">Crew:</div>
+                    <div ref={this.crewEditors} class="skyward-station-grid skyward-station-grid--crew" />
                 </div>
 
                 <div class="skyward-subsection">
-                    <div class="skyward-subsection__title">Baggage stations (weight lbs, with max limit):</div>
-                    <div ref={this.baggageEditors} class="skyward-editor-list" />
-                </div>
-
-                <div class="skyward-subsection">
-                    <div class="skyward-subsection__title">Passenger/seat stations (occupancy pax, with max seat capacity):</div>
+                    <div class="skyward-subsection__title">Passengers:</div>
                     <div ref={this.seatSummary} class="skyward-seat-summary" />
-                    <div ref={this.seatEditors} class="skyward-editor-list" />
+                    <div ref={this.seatEditors} class="skyward-station-grid" />
+                </div>
+
+                <div class="skyward-subsection">
+                    <div class="skyward-subsection__title">Cargo:</div>
+                    <div ref={this.cargoEditors} class="skyward-station-grid" />
+                </div>
+
+                <div class="skyward-subsection">
+                    <div class="skyward-subsection__title">Baggage:</div>
+                    <div ref={this.baggageEditors} class="skyward-station-grid" />
                 </div>
 
                 <div class="skyward-action-group">
-                    <button
-                        ref={this.loadCargoPresetButton}
-                        type="button"
-                        class="skyward-action-button skyward-action-button--blue"
-                    >
-                        Load Cargo Preset
-                    </button>
-                    <button
-                        ref={this.sendPlanButton}
-                        type="button"
-                        class="skyward-action-button skyward-action-button--teal"
-                    >
-                        Send Plan to ATC (No Immediate Load)
-                    </button>
-                    <button
-                        ref={this.exportAircraftButton}
-                        type="button"
-                        class="skyward-action-button skyward-action-button--blue"
-                    >
-                        Export Aircraft JSON
-                    </button>
+                    {this.renderActionButton(
+                        "Load Cargo Preset",
+                        "skyward-action-button skyward-action-button--blue",
+                        () => { void this.loadCargoPreset(); },
+                    )}
+                    {this.renderActionButton(
+                        "Send Plan to ATC (No Immediate Load)",
+                        "skyward-action-button skyward-action-button--teal",
+                        () => { void this.sendPlannerConfigToAtcAndOpen(); },
+                    )}
+                    {this.renderActionButton(
+                        "Export Aircraft JSON",
+                        "skyward-action-button skyward-action-button--blue",
+                        () => { void this.exportAircraftJson(); },
+                    )}
                 </div>
 
                 <div ref={this.cargoResult} class="skyward-result" />
@@ -2714,13 +2845,13 @@ export class AddonStatus extends GamepadUiView<HTMLDivElement, AddonStatusProps>
                         <div class="skyward-sidebar__subtitle">Internal app sections</div>
                     </div>
                     <nav class="skyward-sidebar__nav">
-                        {this.renderSidebarButton("Overview", "overview", this.overviewNavButton)}
-                        {this.renderSidebarButton("SimConnect", "simconnect", this.simconnectNavButton)}
-                        {this.renderSidebarButton("Payload", "payload", this.payloadNavButton)}
+                        {this.renderSidebarButton("Overview", "overview", this.overviewNavSelected)}
+                        {this.renderSidebarButton("SimConnect", "simconnect", this.simconnectNavSelected)}
+                        {this.renderSidebarButton("Payload", "payload", this.payloadNavSelected)}
                     </nav>
                 </aside>
 
-                <main class="skyward-content">
+                <main class="skyward-content scroll-container">
                     {this.renderOverviewSection()}
                     {this.renderSimConnectSection()}
                     {this.renderPayloadSection()}

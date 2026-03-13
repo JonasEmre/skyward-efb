@@ -1,4 +1,7 @@
 import {
+    Button,
+} from "@efb/efb-api";
+import {
     AirportFacility,
     AirportClass,
     AdcEvents,
@@ -24,6 +27,7 @@ import {
     MapSystemKeys,
     MapSystemWaypointRoles,
     NearestAirportSearchSession,
+    Subject,
     Subscription,
     UnitType,
     Vec2Math,
@@ -103,7 +107,7 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private static readonly MAX_AIRPORT_SEARCH_RANGE_NM = 750;
 
     private readonly rootRef = FSComponent.createRef<HTMLDivElement>();
-    private readonly debugPullButtonRef = FSComponent.createRef<HTMLButtonElement>();
+    private readonly debugPullLabelRef = FSComponent.createRef<HTMLDivElement>();
     private readonly projectedSize = Vec2Subject.create(Vec2Math.create(100, 100));
     private readonly deadZone = VecNSubject.create(VecNMath.create(4));
     private readonly aircraftPosition = new GeoPoint(0, 0);
@@ -144,13 +148,12 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
     private lastDragX = 0;
     private lastDragY = 0;
     private mapRangeNm = SkywardOverviewMap.DEFAULT_RANGE_NM;
+    private readonly debugPullButtonDisabled = Subject.create(true);
 
     private readonly boundWheelHandler = this.onMapWheel.bind(this);
     private readonly boundMouseDownHandler = this.onMapMouseDown.bind(this);
     private readonly boundMouseMoveHandler = this.onMapMouseMove.bind(this);
     private readonly boundMouseUpHandler = this.onMapMouseUp.bind(this);
-    private readonly boundDebugPullClickHandler = this.onDebugPullButtonPressed.bind(this);
-
     public onAfterRender(): void {
         const root = this.rootRef.instance;
         if (typeof ResizeObserver !== "undefined" && root) {
@@ -167,10 +170,6 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             root.onmouseup = this.boundMouseUpHandler;
             root.onmouseleave = this.boundMouseUpHandler;
         }
-        if (this.debugPullButtonRef.instance) {
-            this.debugPullButtonRef.instance.onclick = this.boundDebugPullClickHandler;
-        }
-
         this.configureMapAppearance();
         this.configureAirportWaypointDisplay();
         this.bindPositionStreams();
@@ -429,33 +428,29 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
 
     private onDebugPullButtonPressed(): void {
         const result = this.debugDbPull.startManualExport();
-        const button = this.debugPullButtonRef.getOrDefault();
-        if (!button) {
-            return;
-        }
-
         if (result === "waiting_gps") {
-            button.textContent = "Waiting GPS";
+            this.setDebugPullButtonLabel("Waiting GPS");
             return;
         }
         if (result === "busy") {
-            button.textContent = "Pulling...";
-            button.disabled = true;
+            this.setDebugPullButtonLabel("Pulling...");
+            this.debugPullButtonDisabled.set(true);
             return;
         }
 
-        button.textContent = "Pulling...";
-        button.disabled = true;
+        this.setDebugPullButtonLabel("Pulling...");
+        this.debugPullButtonDisabled.set(true);
     }
 
     private refreshDebugPullButton(): void {
-        const button = this.debugPullButtonRef.getOrDefault();
-        if (!button) {
-            return;
-        }
+        this.debugPullButtonDisabled.set(!this.hasValidGpsPosition);
+        this.setDebugPullButtonLabel(this.hasValidGpsPosition ? "DB Pull" : "Waiting GPS");
+    }
 
-        button.disabled = !this.hasValidGpsPosition;
-        button.textContent = this.hasValidGpsPosition ? "DB Pull" : "Waiting GPS";
+    private setDebugPullButtonLabel(label: string): void {
+        if (this.debugPullLabelRef.instance) {
+            this.debugPullLabelRef.instance.textContent = label;
+        }
     }
 
     public render(): VNode {
@@ -463,14 +458,13 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             <div ref={this.rootRef} class="skyward-overview-map">
                 {this.mapSystem.map}
                 <div class="skyward-overview-map__controls">
-                    <button
-                        ref={this.debugPullButtonRef}
+                    <Button
                         class="skyward-overview-map__debug-button"
-                        type="button"
-                        disabled
+                        disabled={this.debugPullButtonDisabled}
+                        callback={() => { this.onDebugPullButtonPressed(); }}
                     >
-                        Waiting GPS
-                    </button>
+                        <div ref={this.debugPullLabelRef} class="skyward-button__label">Waiting GPS</div>
+                    </Button>
                 </div>
             </div>
         );
@@ -490,9 +484,6 @@ export class SkywardOverviewMap extends DisplayComponent<SkywardOverviewMapProps
             root.onmousemove = null;
             root.onmouseup = null;
             root.onmouseleave = null;
-        }
-        if (this.debugPullButtonRef.instance) {
-            this.debugPullButtonRef.instance.onclick = null;
         }
 
         this.debugDbPull.destroy();
